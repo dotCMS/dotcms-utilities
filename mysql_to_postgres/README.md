@@ -26,21 +26,22 @@ Requires
 Tested on OS X 12 and Debian 11.
 
 On Debian it is easiest to spin up a new VPS, run everything as root, and delete the VPS when complete.
-
-Docker Desktop for Mac requires increased memory and disk space in settings -> Resources
-
-### Install Debian 11 packages
+ 
+#### Debian 11 prep
 Run as root:
 ```
 curl -sSL https://get.docker.com | sh
 apt install -y python3-venv python3-pip git
 ```
+#### OS X prep
+- Install Docker Desktop
+-- Increased memory and disk space in settings -> Resources
 
-Fetch the tool
+#### Fetch the tool
 
 `git clone https://github.com/dotCMS/dotcms-utilities.git`
 
-### Option 1: Use vanilla python virtualenv
+#### Option 1: Use vanilla python virtualenv
 ```bash
 python3 -m venv mysqlmigrate
 source mysqlmigrate/bin/activate
@@ -49,7 +50,7 @@ cd dotcms-utilities/mysql_to_postgres/invoke
 invoke migrate -m /absolute/path/to/mysqldump.sql
 deactivate # exit virtualenv
 ```
-### Option 2: Use pipx and poetry
+#### Option 2: Use pipx and poetry
 [Install pipx](https://pypa.github.io/pipx/)
 
 Install poetry `pipx install poetry`
