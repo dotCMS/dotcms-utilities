@@ -32,7 +32,7 @@ Docker Desktop for Mac requires increased memory and disk space in settings -> R
 ### Install Debian 11 packages
 Run as root:
 ```
-curl -sSL https://get.docker.com | get-docker.sh
+curl -sSL https://get.docker.com | sh
 apt install -y python3-venv python3-pip git
 ```
 
@@ -55,8 +55,8 @@ deactivate # exit virtualenv
 Install poetry `pipx install poetry`
 then
 ```bash
-poetry install 
 cd dotcms-utilities/mysql_to_postgres/invoke
+poetry install --no-root
 poetry run invoke migrate -m /absolute/path/to/mysqldump.sql
 ```
 
