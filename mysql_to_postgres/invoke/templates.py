@@ -59,9 +59,7 @@ COMMIT;
 
     def write_dbs_compose(self):
         """
-        code smell here sorry
-        if write == False, returns docker-compose yaml as string
-        if write == True, returns path to docker-compose file
+        write docker-compose database services bits to the compose file 
         """
         dbs = self.compose_all_dbs()
         with open(self.compose_file_path, 'w') as f:
