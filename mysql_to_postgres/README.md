@@ -24,24 +24,22 @@ Requires
 * Docker engine or Docker desktop
 
 Tested on OS X 12 and Debian 11.
-
-On Debian it is easiest to spin up a new VPS, run everything as root, and delete the VPS when complete.
  
 #### Debian 11 prep
+On Debian it is easiest to spin up a new VPS, run everything as root, and delete the VPS when complete.
+
 Run as root:
 ```
 curl -sSL https://get.docker.com | sh
 apt install -y python3-venv python3-pip git
 ```
 #### OS X prep
-- Install Docker Desktop
--- Increased memory and disk space in settings -> Resources
+- Install Docker Desktop, increase memory and disk space in settings -> Resources
 
 #### Fetch the tool
-
 `git clone https://github.com/dotCMS/dotcms-utilities.git`
 
-#### Option 1: Use vanilla python virtualenv
+#### Run the tool - Option 1: Use vanilla python virtualenv
 ```bash
 python3 -m venv mysqlmigrate
 source mysqlmigrate/bin/activate
@@ -50,7 +48,7 @@ cd dotcms-utilities/mysql_to_postgres/invoke
 invoke migrate -m /absolute/path/to/mysqldump.sql
 deactivate # exit virtualenv
 ```
-#### Option 2: Use pipx and poetry
+#### Run the tool - Option 2: Use pipx and poetry
 [Install pipx](https://pypa.github.io/pipx/)
 
 Install poetry `pipx install poetry`
@@ -73,7 +71,10 @@ Docstring:
   Convert the provided mysql dump file to dotCMS 21.06 Postgres pg_dump file
 
 Required Options:
-  -m STRING, --mysqldump-file=STRING
+  -m STRING, --mysqldump-file=/path/to/mysqldump.sql
+
+Optional Options:
+  -p [STRING], --pg-dump-file=/path/to/output/pgdump.sql.gz
 ```
 [Invoke docs](https://www.pyinvoke.org/) 
 
