@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "dotcms-mysql-to-pg"
+version = "0.1.0"
+description = ""
+authors = ["Todd Jacobsen <todd.jacobsen@dotcms.com>"]
+readme = "README.md"
+packages = [{include = "dotcms_mysql_to_pg"}]
+
+[tool.poetry.dependencies]
+python = "^3.8, <3.11"
+invoke = "^1.7.3"
+rich = "^12.6.0"
+docker-compose = "^1.29.2"
+mysql-connector-python = "^8.0.31"
+psycopg2-binary = "^2.9.5"
+
+
+[tool.poetry.group.dev.dependencies]
+pylint = "^2.15.5"
+tox = "^3.27.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
