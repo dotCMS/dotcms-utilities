@@ -49,11 +49,9 @@ invoke migrate -m /absolute/path/to/mysqldump.sql
 deactivate # exit virtualenv
 ```
 #### Run the tool - Option 2: Use pipx and poetry
-[Install pipx](https://pypa.github.io/pipx/)
-
-Install poetry `pipx install poetry`
-then
+[Install pipx](https://pypa.github.io/pipx/) then
 ```bash
+pipx install poetry
 cd dotcms-utilities/mysql_to_postgres/invoke
 poetry install --no-root
 poetry run invoke migrate -m /absolute/path/to/mysqldump.sql
