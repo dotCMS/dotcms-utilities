@@ -70,9 +70,6 @@ Docstring:
 
 Required Options:
   -m STRING, --mysqldump-file=/path/to/mysqldump.sql
-
-Optional Options:
-  -p [STRING], --pg-dump-file=/path/to/output/pgdump.sql.gz
 ```
 [Invoke docs](https://www.pyinvoke.org/) 
 
