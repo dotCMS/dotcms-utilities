@@ -73,15 +73,12 @@ Required Options:
 ```
 [Invoke docs](https://www.pyinvoke.org/) 
 
-Invoke is akin to `make`
-
+**increase `retry_interval` and `retry_attempts` in `tasks.py` for large DBs**, else the script will time out while the import is in progress
+- a 16G mysqldump file with ~1M contentlet rows took about 2.25 hours on my newish mac
 
 ## Restrictions
 - delete `DROP/CREATE DATABASE` lines from mysqldump file, or use `mysqldump --no-create-db`
 - `invoke` command must be run from the directory containing the `tasks.py` file - `dotcms_mysql_to_pg`
-- increase `retry_interval` and `retry_attempts` in `tasks.py` for large DBs, else the script will give up while the import is in progress
--- a 16G mysqldump file with ~1M contentlet rows took about 2.25 hours on my newish mac
-
 
 ## Script workflow
 Each run of the script creates a new temp dir which contains docker-compose.yml and other files.
