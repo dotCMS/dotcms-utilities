@@ -73,7 +73,7 @@ Required Options:
 ```
 [Invoke docs](https://www.pyinvoke.org/) 
 
-**increase `retry_interval` and `retry_attempts` in `tasks.py` for large DBs**, else the script will time out while the import is in progress
+**increase `retry_interval` and `retry_attempts` in [tasks.py](https://github.com/dotCMS/dotcms-utilities/blob/main/mysql_to_postgres/invoke/tasks.py) for large DBs**, else the script will time out while the import is in progress
 - a 16G mysqldump file with ~1M contentlet rows took about 2.25 hours on my newish mac
 
 ## Restrictions
