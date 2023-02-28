@@ -45,7 +45,7 @@ python3 -m venv mysqlmigrate
 source mysqlmigrate/bin/activate
 pip install -r dotcms-utilities/mysql_to_postgres/requirements.txt
 cd dotcms-utilities/mysql_to_postgres/invoke
-invoke migrate -m /absolute/path/to/mysqldump.sql
+invoke migrate /absolute/path/to/mysqldump.sql
 deactivate # exit virtualenv
 ```
 #### Run the tool - Option 2: Use pipx and poetry
@@ -54,7 +54,7 @@ deactivate # exit virtualenv
 pipx install poetry
 cd dotcms-utilities/mysql_to_postgres/invoke
 poetry install --no-root
-poetry run invoke migrate -m /absolute/path/to/mysqldump.sql
+poetry run invoke migrate /absolute/path/to/mysqldump.sql
 ```
 
 ## Usage
