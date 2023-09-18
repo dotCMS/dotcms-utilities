@@ -22,6 +22,7 @@ This tool has been tested on mysql dbs from dotCMS 5.1 - 21.06.
 Requires 
 * python >= 3.8
 * Current Docker engine or Docker desktop
+
   Must provide `docker compose` command, see https://docs.docker.com/compose/migrate/
 
 Tested on OS X 12 and Debian 11.
