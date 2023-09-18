@@ -55,6 +55,7 @@ git clone https://github.com/dotCMS/dotcms-utilities.git
 cd dotcms-utilities/mysql_to_postgres/invoke
 poetry install --no-root
 poetry run invoke migrate /absolute/path/to/mysqldump.sql
+exit
 ```
 
 ## Usage
