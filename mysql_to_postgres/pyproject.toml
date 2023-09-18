@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "dotcms_mysql_to_pg"}]
 
 [tool.poetry.dependencies]
-python = "^3.8, <3.11"
+python = "^3.8, <3.12"
 invoke = "^1.7.3"
 rich = "^12.6.0"
 docker-compose = "^1.29.2"
