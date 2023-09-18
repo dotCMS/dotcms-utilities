@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from tempfile import mkdtemp
@@ -26,6 +27,12 @@ template = templates.Template(
 
 class MigrationException(Exception):
     pass
+
+
+result = os.uname()
+if result.machine != 'x86_64':
+    rich.print(":x: The 'pgloader' Docker image is only supported on Intel hardware, bailing...")
+    sys.exit()
 
 @task(optional=["pg_dump_file"])
 def migrate(c, mysqldump_file, pg_dump_file=None):
