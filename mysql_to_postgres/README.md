@@ -36,13 +36,12 @@ apt install -y python3-venv python3-pip git
 #### OS X prep
 - Install Docker Desktop, increase memory and disk space in settings -> Resources
 
-#### Fetch the tool
-`git clone https://github.com/dotCMS/dotcms-utilities.git`
-
 #### Run the tool - Option 1: Use vanilla python virtualenv
 ```bash
 python3 -m venv mysqlmigrate
-source mysqlmigrate/bin/activate
+cd mysqlmigrate
+source bin/activate
+git clone https://github.com/dotCMS/dotcms-utilities.git
 pip install -r dotcms-utilities/mysql_to_postgres/requirements.txt
 cd dotcms-utilities/mysql_to_postgres/invoke
 invoke migrate /absolute/path/to/mysqldump.sql
@@ -52,6 +51,7 @@ deactivate # exit virtualenv
 [Install pipx](https://pypa.github.io/pipx/) then
 ```bash
 pipx install poetry
+git clone https://github.com/dotCMS/dotcms-utilities.git
 cd dotcms-utilities/mysql_to_postgres/invoke
 poetry install --no-root
 poetry run invoke migrate /absolute/path/to/mysqldump.sql
