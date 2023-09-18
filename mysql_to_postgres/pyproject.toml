@@ -8,16 +8,15 @@ packages = [{include = "dotcms_mysql_to_pg"}]
 
 [tool.poetry.dependencies]
 python = "^3.8, <3.12"
-invoke = "^1.7.3"
-rich = "^12.6.0"
-docker-compose = "^1.29.2"
 mysql-connector-python = "^8.0.31"
 psycopg2-binary = "^2.9.5"
+rich = "^13.5.3"
+invoke = "^2.2.0"
+tox = "^4.11.3"
 
 
 [tool.poetry.group.dev.dependencies]
 pylint = "^2.15.5"
-tox = "^3.27.1"
 
 [build-system]
 requires = ["poetry-core"]

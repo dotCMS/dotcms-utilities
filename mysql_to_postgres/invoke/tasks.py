@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from tempfile import mkdtemp
 from time import sleep
@@ -8,8 +9,8 @@ from invoke import task
 import templates, utils
 
 # Bump these a lot for big DBs!
-retry_interval = 30 # seconds
-retry_attempts = 200 # very large db's will need this increased
+retry_interval = 15 # seconds
+retry_attempts = 400 # very large db's will need this increased
 
 dotcms_port = 8082
 workdir = mkdtemp(prefix="dotcms_migrate_")
@@ -29,6 +30,7 @@ class MigrationException(Exception):
 @task(optional=["pg_dump_file"])
 def migrate(c, mysqldump_file, pg_dump_file=None):
     """ Convert the provided mysql dump file to dotCMS 21.06 Postgres pg_dump file """
+    assert mysqldump_file.startswith("/"), "Provide absolute, not relative, path to mysqldump file"
     try:
         if pg_dump_file is None:
             pg_dump_file = Path(workdir) / "dotcms-21.06-postgres.sql.gz"
@@ -54,8 +56,7 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         # wait for dotcms to complete migrations
         utils.check_dotcms_appconfiguration(port=dotcms_port, attempts=retry_attempts, interval=retry_interval)
         # stop dotcms and remove dotcms service from compose file
-        print(f"Stopping {workdir_basedir}_dotcms_mysql_1 container")
-        c.run(f"docker stop {workdir_basedir}_dotcms_mysql_1")
+        stop_container(c, f"{workdir_basedir}_dotcms_mysql_1")
         print("---------------------------------------------------")
         # run pgloader 
         rich.print(f":keycap_3:  running pgloader to convert mysql -> postgres")
@@ -65,9 +66,11 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         sleep(10)
         print("waiting for pgloader to complete")
         postgres_query_content()
-        c.run(f"docker logs {workdir_basedir}_pgloader_1")
+        pgloader_cid = get_cid_from_container_name(c, f"{workdir_basedir}_pgloader_1")
+        if pgloader_cid:
+            c.run(f"docker logs {pgloader_cid}")
         utils.postgres_post_import(template.username, template.password)
-        print("stop pgloader containers")
+        print("stop containers")
         stop_docker(c, compose_file, hide="both")
         print("---------------------------------------------------")
         rich.print(f":keycap_4:  Start dotcms 21.06 on converted postgres db")
@@ -75,16 +78,18 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         c.run(f"cp {compose_file} {compose_file}-dotcms-postgres")
         start_docker(c, compose_file)
         utils.check_dotcms_appconfiguration(port=dotcms_port, attempts=retry_attempts, interval=retry_interval)
+        stop_container(c, f"{workdir_basedir}-dotcms_postgres-1")
         print("---------------------------------------------------")
         rich.print(f":keycap_5:  Dump postgres database")
-        c.run(f"docker exec -i {workdir_basedir}_postgres_1 pg_dump --no-owner --clean -h localhost -U dbuser dotcms -f /tmp/db.sql")
-        c.run(f"docker exec -i {workdir_basedir}_postgres_1 gzip /tmp/db.sql")
+        pg_cid = get_cid_from_container_name(c, f"{workdir_basedir}_postgres_1")
+        c.run(f"docker exec -i {pg_cid} pg_dump --no-owner --clean --no-password -h localhost -U dbuser dotcms -f /tmp/db.sql")
+        c.run(f"docker exec -i {pg_cid} gzip /tmp/db.sql")
         c.run(f"rm -f {pg_dump_file}")
-        c.run(f"docker cp {workdir_basedir}_postgres_1:/tmp/db.sql.gz {pg_dump_file}")
+        c.run(f"docker cp {pg_cid}:/tmp/db.sql.gz {pg_dump_file}")
         rich.print(f":keycap_6:  [bold]Here is your postgres sql file:")
         c.run(f"ls -lh {pg_dump_file}")
         print(f"\nDone! For reference, all docker compose files are in {workdir_basedir}")
-        c.run(f"docker exec -i {workdir_basedir}_postgres_1 rm -f /tmp/db.sql.gz")
+        c.run(f"docker exec -i {pg_cid} rm -f /tmp/db.sql.gz")
     except Exception as e:
         utils.fail_msg("error encountered")
         print(e)
@@ -93,13 +98,26 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
 
 @task
 def start_docker(c, compose_file, hide=None):
-    c.run(f"docker-compose -f {compose_file} up -d --build", hide=hide)
-    rich.print(":arrow_up: docker-compose up")
+    c.run(f"docker compose -f {compose_file} up -d --build", hide=hide)
+    rich.print(":arrow_up: docker compose up")
 
 @task
 def stop_docker(c, compose_file, hide=None):
-    c.run(f"docker-compose -f {compose_file} down", hide=hide)
-    rich.print(":arrow_down: docker-compose down")
+    c.run(f"docker compose -f {compose_file} down", hide=hide)
+    rich.print(":arrow_down: docker compose down")
+
+def get_cid_from_container_name(c, container_name):
+    """ deal with "slash/underscore" issues in container names """
+    container_name = container_name.replace("-", ".").replace("_", ".")
+    command = f"docker ps | grep '{container_name}' " + "| awk '{print $1}'"
+    response = c.run(command)
+    return response.stdout.strip()
+
+def stop_container(c, container_name):
+    print(f"Stopping container {container_name}...")
+    cid = get_cid_from_container_name(c, container_name)
+    c.run(f"docker stop {cid}")
+    print(f"Stopped ")
 
 def template_all_dbs(mysqldump_file):
     """

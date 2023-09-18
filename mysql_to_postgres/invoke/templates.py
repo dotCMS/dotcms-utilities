@@ -96,6 +96,7 @@ services:"""
         POSTGRES_USER: {self.username}
         POSTGRES_DB: {self.dbname}
         POSTGRES_PASSWORD: {self.password}
+        PGPASSWORD: {self.password}
     volumes:
       - {self.pg_volume}:/var/lib/postgresql/data
     networks:
