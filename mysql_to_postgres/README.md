@@ -18,7 +18,7 @@ Start the latest dotCMS LTS using the postgres DB
 
 This tool has been tested on mysql dbs from dotCMS 5.1 - 21.06.
 
-## Installation
+## Quickstart
 Requires 
 * python >= 3.8
 * Current Docker engine or Docker desktop
@@ -45,6 +45,14 @@ cd mysqlmigrate
 source bin/activate
 git clone https://github.com/dotCMS/dotcms-utilities.git
 pip install -r dotcms-utilities/mysql_to_postgres/requirements.txt
+```
+Then run a `tox` test to check your installation:
+```
+cd dotcms-utilities/mysql_to_postgres
+tox -e py310
+```
+or run it on a mysqldump file you provide:
+```
 cd dotcms-utilities/mysql_to_postgres/invoke
 invoke migrate /absolute/path/to/mysqldump.sql
 deactivate # exit virtualenv
@@ -56,23 +64,24 @@ pipx install poetry
 git clone https://github.com/dotCMS/dotcms-utilities.git
 cd dotcms-utilities/mysql_to_postgres/invoke
 poetry install --no-root
+```
+Then run a `tox` test to check your installation:
+```
+cd dotcms-utilities/mysql_to_postgres
+poetry run tox -e py310
+```
+or run it on a mysqldump file you provide:
+```
+cd dotcms-utilities/mysql_to_postgres/invoke
 poetry run invoke migrate /absolute/path/to/mysqldump.sql
 exit
 ```
 
+Note: `invoke` commands must be run from the `invoke` directory
+
 ## Usage
 ```bash
-invoke migrate -m /absolute/path/to/mysqldump.sql
-```
-
-```bash
-Usage: inv[oke] migrate -m /path/to/mysqldump.sql
-
-Docstring:
-  Convert the provided mysql dump file to dotCMS 21.06 Postgres pg_dump file
-
-Required Options:
-  -m STRING, --mysqldump-file=/path/to/mysqldump.sql
+invoke migrate /absolute/path/to/mysqldump.sql
 ```
 [Invoke docs](https://www.pyinvoke.org/) 
 
@@ -80,6 +89,7 @@ Required Options:
 - a 16G mysqldump file with ~1M contentlet rows took about 2.25 hours on my newish mac
 
 ## Restrictions
+- `pgloader` Docker image requires Intel hardware
 - delete `DROP/CREATE DATABASE` lines from mysqldump file, or use `mysqldump --no-create-db`
 - `invoke` command must be run from the directory containing the `tasks.py` file - `dotcms_mysql_to_pg`
 
