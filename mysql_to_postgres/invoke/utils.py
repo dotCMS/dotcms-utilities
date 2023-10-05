@@ -109,6 +109,7 @@ def postgres_post_import(
         adminconfig: idx_16392_primary
     these need to be renamed to:
         "{table_name}_pkey"
+    rename db tables as needed
     """
     for query in (
         "ALTER SCHEMA public RENAME TO public_old;",
@@ -116,7 +117,7 @@ def postgres_post_import(
     ):
         postgres_query(username, password, query, host=host, db=db)
 
-    ## special cases: these tables don't use "_pkey" suffix naming convention
+    ## special cases: these tables don't use "_pkey" suffix for 'PRIMARY KEY CONSTRAINT' names
     for table, postgres_key in (
         ("notification", "pk_notification"),
         ("system_event", "pk_system_event"),
@@ -126,6 +127,32 @@ def postgres_post_import(
         query += f" AND constraint_type = 'PRIMARY KEY'  AND table_name = '{table}';"
         primary_key = postgres_query(username, password, query, host=host, db=db, print_success=False)[0][0]
         query = f"ALTER TABLE {table} RENAME CONSTRAINT {primary_key} TO {postgres_key};"
+        postgres_query(username, password, query, host=host, db=db)
+
+    ## special cases: rename mysql tables to match postgres
+    for mysql_table, postgres_table in (
+        ("clickstream_clickstream_id_seq", "clickstream_seq"),
+        ("clickstream_request_clickstream_request_id_seq", "clickstream_request_seq"),
+        ("clickstream_404_clickstream_404_id_seq", "clickstream_404_seq"),
+        ("content_rating_id_seq", "content_rating_sequence"),
+        ("dashboard_user_preferences_id_seq", "dashboard_usrpref_seq"),
+        ("trackback_id_seq", "trackback_sequence"),
+        ("users_to_delete_id_seq", "user_to_delete_seq"),
+    ):
+        query = f"ALTER TABLE {mysql_table} RENAME TO {postgres_table};"
+        postgres_query(username, password, query, host=host, db=db)
+
+    ## special cases: these table names need "_id" removed
+    for mysql_table in (
+        "chain_link_code_id_seq",
+        "chain_id_seq",
+        "chain_state_parameter_id_seq",
+        "chain_state_id_seq",
+        "permission_reference_id_seq",
+        "permission_id_seq",
+        "user_preferences_id_seq",
+    ):
+        query = f"ALTER TABLE {mysql_table} RENAME TO {mysql_table.replace('_id_', '_')};"
         postgres_query(username, password, query, host=host, db=db)
 
     ## end special cases, rename the remaining pkeys to "{table_name}_pkey"

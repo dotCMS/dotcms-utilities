@@ -17,6 +17,7 @@ tox = "^4.11.3"
 
 [tool.poetry.group.dev.dependencies]
 pylint = "^2.15.5"
+migra = "^3.0.1663481299"
 
 [build-system]
 requires = ["poetry-core"]
