@@ -1,3 +1,9 @@
+"""
+Description: All the heavy lifting for Invoke tasks
+- "manual" database migration tasks - table renames, etc
+- server health and status checks - so Invoke knows when when it can proceed
+"""
+
 from time import sleep
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -48,6 +54,7 @@ def mysql_query_content(
     host="127.0.0.1",
     db="dotcms"
     ):
+    """ mysql client """
     count = None
     config = {
         'user': username,
@@ -80,6 +87,7 @@ def postgres_query_content(
         host="127.0.0.1",
         db="dotcms"
     ):
+    """ postgres client """
     count = None
     query = ("SELECT COUNT(*) FROM contentlet;")
     try:
@@ -166,6 +174,23 @@ def postgres_post_import(
             if primary_key.startswith("idx_") and primary_key.endswith("_primary"):
                 query = f"ALTER TABLE {table} RENAME CONSTRAINT {primary_key} TO {table}_pkey;"
                 postgres_query(username, password, query, host=host, db=db)
+
+    ## remove quartz locks
+    for table in (
+        "qrtz_locks", 
+        "qrtz_excl_locks"
+    ):
+        query = f"DELETE FROM {table};"
+        postgres_query(username, password, query, host=host, db=db)
+        for lock in (
+            "TRIGGER_ACCESS", 
+            "JOB_ACCESS", 
+            "CALENDAR_ACCESS", 
+            "STATE_ACCESS", 
+            "MISFIRE_ACCESS"
+        ):
+            query = f"INSERT INTO {table} values('{lock}');"
+            postgres_query(username, password, query, host=host, db=db)
 
 def postgres_query(
         username, 

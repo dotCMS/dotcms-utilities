@@ -45,7 +45,7 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
             pg_dump_file = Path(pg_dump_file)
         # import provided mysqldump file
         print("---------------------------------------------------")
-        rich.print(f":keycap_1:  loading {mysqldump_file}")
+        rich.print(f":keycap_1:  loading mysqldump file: {mysqldump_file}")
         compose_file = template_all_dbs(mysqldump_file)
         c.run(f"cp {compose_file} {compose_file}-dbs")
         start_docker(c, compose_file)
