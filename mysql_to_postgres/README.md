@@ -86,9 +86,14 @@ exit
 Note: `invoke` commands must be run from the `invoke` directory
 
 ## Usage
+run
 ```bash
 invoke migrate /absolute/path/to/mysqldump.sql
 ```
+Wait for 
+
+*Here is your postgres sql file:*
+
 That's it!
 
 **increase `retry_interval` and `retry_attempts` in [tasks.py](https://github.com/dotCMS/dotcms-utilities/blob/main/mysql_to_postgres/invoke/tasks.py) for large DBs**, else the script will time out while the import is in progress
