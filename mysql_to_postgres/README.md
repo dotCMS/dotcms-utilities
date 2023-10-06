@@ -20,7 +20,13 @@ This tool has been tested on mysql dbs from dotCMS 5.1 - 21.06.
 
 ## Quickstart
 Requires 
-* python >= 3.8
+* python >= 3.8 with `pip` and `venv` - check with:
+  ```
+  python -V
+  pip --help
+  python -m venv --help
+  ```
+
 * Current Docker engine or Docker desktop
 
   Must provide `docker compose` command, see https://docs.docker.com/compose/migrate/
@@ -83,7 +89,7 @@ Note: `invoke` commands must be run from the `invoke` directory
 ```bash
 invoke migrate /absolute/path/to/mysqldump.sql
 ```
-[Invoke docs](https://www.pyinvoke.org/) 
+That's it!
 
 **increase `retry_interval` and `retry_attempts` in [tasks.py](https://github.com/dotCMS/dotcms-utilities/blob/main/mysql_to_postgres/invoke/tasks.py) for large DBs**, else the script will time out while the import is in progress
 - a 16G mysqldump file with ~1M contentlet rows took about 2.25 hours on my newish mac
