@@ -93,10 +93,10 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         c.run(f"docker exec -i {pg_cid} gzip /tmp/db.sql")
         c.run(f"rm -f {pg_dump_file}")
         c.run(f"docker cp {pg_cid}:/tmp/db.sql.gz {pg_dump_file}")
-        rich.print(f":keycap_6:  [bold]Here is your postgres sql file:")
-        c.run(f"ls -lh {pg_dump_file}")
         print(f"\nDone! For reference, all docker compose files are in {workdir_basedir}")
         c.run(f"docker exec -i {pg_cid} rm -f /tmp/db.sql.gz")
+        rich.print(f":keycap_6:  [bold]Here is your postgres sql file:")
+        c.run(f"ls -lh {pg_dump_file}")
     except Exception as e:
         utils.fail_msg("error encountered")
         print(e)
