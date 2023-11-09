@@ -1,5 +1,6 @@
+NOTE: This tool must be run on an Intel-based docker host. It will not run on ARM chipsets, including "Apple silicon" M1, M2, M3. 
 # Convert a mysqldump file to postgres pg_dump file
-## MySQL Support Deprecated
+## dotCMS MySQL Support is Deprecated
 DotCMS 21.06 is the last LTS release to support MySQL, so MySQL DBs must be migrated to Postgres before upgrading to the latest dotCMS.
 
 We *highly* recommend upgrading dotCMS to [our latest LTS release](https://www.dotcms.com/docs/latest/current-releases).
