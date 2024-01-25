@@ -3,7 +3,7 @@ templates for docker-compose and db init files
 """
 from pathlib import Path
 
-import utils
+import migrate_db
 
 class Template:
     def __init__(
@@ -64,7 +64,7 @@ COMMIT;
         dbs = self.compose_all_dbs()
         with open(self.compose_file_path, 'w') as f:
             f.write(dbs)
-        utils.success_msg(f"compose file with databases only: {self.compose_file_path}") 
+        migrate_db.success_msg(f"compose file with databases only: {self.compose_file_path}") 
         print(f"    loading mysqldump file {self.mysqldump_dotcms}")
         return str(self.compose_file_path)
 

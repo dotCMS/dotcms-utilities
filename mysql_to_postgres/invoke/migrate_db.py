@@ -191,6 +191,22 @@ def postgres_post_import(
         ):
             query = f"INSERT INTO {table} values('{lock}');"
             postgres_query(username, password, query, host=host, db=db)
+    # order matters due to foreign key constraints
+    for more_qrtz in [
+        "qrtz_excl_fired_triggers",
+        "qrtz_excl_cron_triggers where trigger_group <> 'sitesearch'",
+        "qrtz_excl_simple_triggers where trigger_group <> 'sitesearch'",
+        "qrtz_excl_triggers where trigger_group <> 'sitesearch'",
+        "qrtz_excl_scheduler_state",
+        "qrtz_excl_job_details where job_group <> 'sitesearch'",
+        "qrtz_fired_triggers",
+        "qrtz_cron_triggers",
+        "qrtz_triggers",
+        "qrtz_scheduler_state",
+        "qrtz_job_details",
+    ]:
+        query = f"DELETE FROM {more_qrtz};"
+        postgres_query(username, password, query, host=host, db=db)
 
 def postgres_query(
         username, 

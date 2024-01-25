@@ -7,7 +7,7 @@ from time import sleep
 import rich
 from invoke import task
 
-import templates, utils
+import templates, migrate_db
 
 # Bump these a lot for big DBs!
 retry_interval = 15 # seconds
@@ -54,14 +54,14 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         print("waiting for mysql to load mysqldump file")
         mysql_query_content()
         print("cleaning up mysql db")
-        utils.mysql_post_import(template.username, template.password,)
+        migrate_db.mysql_post_import(template.username, template.password,)
         print("---------------------------------------------------")
         rich.print(f":keycap_2:  start dotcms 21.06 on mysql to execute migrations")
         template_dotcms_mysql()
         c.run(f"cp {compose_file} {compose_file}-dotcms-mysql")
         start_docker(c, compose_file)
         # wait for dotcms to complete migrations
-        utils.check_dotcms_appconfiguration(port=dotcms_port, attempts=retry_attempts, interval=retry_interval)
+        migrate_db.check_dotcms_appconfiguration(port=dotcms_port, attempts=retry_attempts, interval=retry_interval)
         # stop dotcms and remove dotcms service from compose file
         stop_container(c, f"{workdir_basedir}_dotcms_mysql_1")
         print("---------------------------------------------------")
@@ -76,7 +76,7 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         pgloader_cid = get_cid_from_container_name(c, f"{workdir_basedir}_pgloader_1")
         if pgloader_cid:
             c.run(f"docker logs {pgloader_cid}")
-        utils.postgres_post_import(template.username, template.password)
+        migrate_db.postgres_post_import(template.username, template.password)
         print("stop containers")
         stop_docker(c, compose_file, hide="both")
         print("---------------------------------------------------")
@@ -84,7 +84,7 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         template_dotcms_postgres()
         c.run(f"cp {compose_file} {compose_file}-dotcms-postgres")
         start_docker(c, compose_file)
-        utils.check_dotcms_appconfiguration(port=dotcms_port, attempts=retry_attempts, interval=retry_interval)
+        migrate_db.check_dotcms_appconfiguration(port=dotcms_port, attempts=retry_attempts, interval=retry_interval)
         stop_container(c, f"{workdir_basedir}-dotcms_postgres-1")
         print("---------------------------------------------------")
         rich.print(f":keycap_5:  Dump postgres database")
@@ -98,7 +98,7 @@ def migrate(c, mysqldump_file, pg_dump_file=None):
         rich.print(f":keycap_6:  [bold]Here is your postgres sql file:")
         c.run(f"ls -lh {pg_dump_file}")
     except Exception as e:
-        utils.fail_msg("error encountered")
+        migrate_db.fail_msg("error encountered")
         print(e)
     stop_docker(c, compose_file, hide="both")
 
@@ -147,7 +147,7 @@ def mysql_query_content():
     count = 1
     while count <= retry_attempts:
         sleep(retry_interval)
-        contentlet_count = utils.mysql_query_content(
+        contentlet_count = migrate_db.mysql_query_content(
             template.username,
             template.password,
         )
@@ -163,7 +163,7 @@ def postgres_query_content():
     count = 1
     while count <= retry_attempts:
         sleep(retry_interval)
-        contentlet_count = utils.postgres_query_content(
+        contentlet_count = migrate_db.postgres_query_content(
             template.username,
             template.password,
         )
