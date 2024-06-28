@@ -1,0 +1,133 @@
+#!/bin/bash
+
+# Enhance the usage of the script
+usage() {
+    echo "Usage: $0 [<new-branch-name>] [-p|--push]"
+    echo "  -p, --push    Push the new branch to remote after creation"
+    exit 1
+}
+
+# Check if 'fzf' is available
+fzf_check=$(command -v fzf)
+
+# Function to select a branch using fzf or a fallback method, now only showing local branches
+select_branch() {
+    if [ -n "$fzf_check" ]; then
+        # Using fzf to select a local branch, highlighting the current branch
+        echo "Select a branch (current branch is highlighted):" >&2
+        selected_branch=$(git branch --sort=-committerdate | fzf --height 20% --reverse |  sed -e 's/^[\* ]*//')
+    else
+        # Fallback to using select, only showing local branches, highlighting the current branch
+        echo "fzf not found, using fallback method to select branch." >&2
+        echo "Select a branch (current branch is marked with '->'):" >&2
+        select branch in $(git branch --sort=-committerdate | sed "s/$current_branch/-> $current_branch/"); do
+            if [ -n "$branch" ]; then
+                # Remove any formatting added for current branch indication
+                selected_branch=$(echo $branch | sed 's/-> //' | sed -e 's/^[[:space:]]*//')
+                break
+            else
+                echo "Invalid selection. Please try again." >&2
+            fi
+        done
+    fi
+    echo $selected_branch
+}
+
+# Main script starts here
+new_branch=""
+push_to_remote=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--push)
+            push_to_remote=true
+            shift
+            ;;
+        *)
+            if [ -z "$new_branch" ]; then
+                new_branch="$1"
+            else
+                echo "Error: Unexpected argument '$1'"
+                usage
+            fi
+            shift
+            ;;
+    esac
+done
+
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+if [ -z "$new_branch" ]; then
+    new_branch=$(select_branch)
+    if [ -z "$new_branch" ]; then
+        echo "No branch selected."
+        usage
+    fi
+fi
+
+# Check if new_branch is the same as current_branch
+if [ "$new_branch" = "$current_branch" ]; then
+    echo "New branch is the same as the current branch."
+    exit 1
+fi
+
+# Function to handle WIP commits for indexed (staged) changes only
+create_wip() {
+    # Check if there are ignored files or modifications not staged
+    if [ -n "$(git status --porcelain --ignored)" ]; then
+        # Check if there are staged changes
+        if git diff --cached --quiet; then
+            echo "No staged changes to commit."
+        else
+            git commit -m "WIP" --no-verify  # Commit with a new message reflecting all staged changes
+        fi
+
+        # Move to the root directory of the project
+        cd "$(git rev-parse --show-toplevel)"
+
+        # Clean the project using Maven wrapper if available
+        if [ -f "mvnw" ]; then
+            ./mvnw clean
+        fi
+
+        git add -A  # Add all remaining changes and untracked files
+
+        git commit -m "WIP-unstaged"  --no-verify # Commit with a new message reflecting all remaining changes
+    else
+        echo "No ignored files or untracked changes to clean."
+    fi
+}
+
+# Create WIP commits if necessary
+create_wip
+
+git fetch origin
+
+# Switch to the new branch, creating it if necessary based on updated 'origin/master'
+if git rev-parse --verify "$new_branch" >/dev/null 2>&1; then
+    git checkout "$new_branch"
+else
+    # Check if the branch exists on the remote
+    if git show-ref --verify --quiet "refs/remotes/origin/$new_branch"; then
+        # If the branch exists on the remote, check it out and track the remote branch
+        git checkout --track "origin/$new_branch"
+    else
+        # If the branch does not exist on the remote, create and switch to new branch based on master
+        git fetch origin master:master && git checkout -b "$new_branch" master
+        # Set up the remote tracking branch
+        git branch --set-upstream-to=origin/$new_branch $new_branch
+        
+        # Push the new branch to remote only if the push flag is set
+        if [ "$push_to_remote" = true ]; then
+            git push
+        else
+            echo "New branch '$new_branch' created locally and tracking set up. Use 'git push' to push to remote when ready."
+        fi
+    fi
+fi
+
+# Restore WIP state if coming back to a branch
+restore_wip
+$ ensure we have installed and are using the correct java
+sdk env install

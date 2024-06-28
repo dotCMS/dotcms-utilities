@@ -1,0 +1,107 @@
+#!/bin/bash
+
+sanitize_title() {
+    local title="$1"
+    # Replace spaces with dashes, convert to lowercase, remove problematic characters, and manage special cases
+    local sanitized=$(echo "$title" | sed 's/ /-/g' | tr '[:upper:]' '[:lower:]' | sed 's/[\~^:?*\\[\].]//g' | sed 's/--*/-/g')
+    # Ensure the branch name does not end with a hyphen and truncate to 50 characters
+    sanitized=$(echo "$sanitized" | sed 's/-$//')
+    echo "${sanitized:0:50}"
+}
+
+
+create_and_switch_branch() {
+    local issue_number="$1"
+    local issue_title="$2"
+    local custom_suffix="$3"  # New parameter for custom branch name part
+    local sanitized_suffix
+
+    # Decide which suffix to use and sanitize it
+    if [ -n "$custom_suffix" ]; then
+        sanitized_suffix=$(sanitize_title "$custom_suffix")
+    else
+        sanitized_suffix=$(sanitize_title "$issue_title")
+    fi
+
+
+    local base_name="issue-${issue_number}-${sanitized_suffix}"
+
+    echo "base_name = ${base_name}"
+
+    local branch_name
+    local max_index=0
+
+    # Check for existing branches and determine the next index
+    local branches=$(git branch --list | sed 's/^\*//g' | tr -d '[:space:]') # Normalize branch names
+    for branch in $branches; do
+        if [[ $branch =~ ^${base_name}(-([0-9]+))?$ ]]; then
+            local index="${BASH_REMATCH[2]}"
+            if [[ "$index" -gt "$max_index" ]]; then
+                max_index="$index"
+            fi
+        fi
+    done
+
+    # Determine the new branch name, appending a number if necessary
+    if [[ $max_index -gt 0 ]]; then
+        branch_name="${base_name}-$((max_index + 1))"
+    else
+        branch_name="${base_name}"
+    fi
+
+    # Create and switch to the new branch
+    echo "Creating and switching to a new branch: $branch_name."
+    gh issue develop "$issue_number" --name "$branch_name"
+    git smart-switch "$branch_name"
+}
+
+# Fetch and select the issue using fzf or select
+if command -v fzf >/dev/null 2>&1; then
+    SELECTED_ISSUE=$(gh issue list --assignee "@me" --json number,title --jq '.[] | "\(.number) \(.title)"' | fzf --height 50% --reverse)
+else
+    echo "fzf is not installed, using select for issue choice."
+    PS3="Select an issue: "
+    ISSUE_LIST=$(gh issue list --assignee "@me" --json number,title --jq '.[] | "\(.number) \(.title)"')
+    select issue_option in $ISSUE_LIST; do
+        SELECTED_ISSUE=$issue_option
+        break
+    done
+fi
+
+# Extract issue number and title
+ISSUE_NUMBER=$(echo "$SELECTED_ISSUE" | awk '{print $1}')
+ISSUE_TITLE=$(echo "$SELECTED_ISSUE" | cut -d ' ' -f2-)
+
+# Fetch updates from upstream
+echo "Fetching updates from remote..."
+git fetch
+
+# Check for linked branches
+LINKED_BRANCHES=$(gh issue develop "$ISSUE_NUMBER" -l)
+if [[ -z "$LINKED_BRANCHES" ]]; then
+    # Prompt user for custom branch suffix if there are no linked branches or they want to create a new one
+    read -p "Enter custom branch suffix (press Enter to use the default): " CUSTOM_SUFFIX
+    create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
+else
+    # Linked branches exist, offer them for selection
+    echo "Linked branches found. Choose a branch to checkout or CREATE NEW BRANCH:"
+    if command -v fzf >/dev/null 2>&1; then
+        SELECTED_BRANCH=$(echo -e "CREATE NEW BRANCH\n$LINKED_BRANCHES" | fzf --height 50% --reverse | awk '{print $1}')
+    else
+        select branch_option in "CREATE NEW BRANCH" $LINKED_BRANCHES; do
+            SELECTED_BRANCH=$(echo "$branch_option" | awk '{print $1}')
+            break
+        done
+    fi
+
+    # Handle branch selection
+    if [[ "$SELECTED_BRANCH" == "CREATE NEW BRANCH" ]]; then
+        # Prompt for custom branch suffix
+        read -p "Enter custom branch suffix (press Enter to use the default): " CUSTOM_SUFFIX
+        create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
+    elif [[ -n "$SELECTED_BRANCH" ]]; then
+        # Existing branch selected, checkout
+        echo "Switching to the existing branch: $SELECTED_BRANCH."
+        git smart-switch "$SELECTED_BRANCH"
+    fi
+fi

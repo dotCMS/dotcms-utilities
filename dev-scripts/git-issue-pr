@@ -1,0 +1,183 @@
+#!/bin/bash
+
+# Enhanced user interaction and feedback
+echo "Fetching current branch and issue information..."
+echo "-------------------------------------------------"
+
+# Check if gh is installed
+if ! command -v gh &> /dev/null; then
+    echo "GitHub CLI (gh) could not be found. Please install it to continue."
+    exit 1
+fi
+
+# Get current branch name and extract issue number
+BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+ISSUE_NUMBER=$(echo "$BRANCH_NAME" | grep -o -E '^[0-9]+|issue-([0-9]+)' | grep -o -E '[0-9]+') # gh issue develop uses number at start by default
+
+if [ -z "$ISSUE_NUMBER" ]; then
+    echo "Error: No issue number found in the current branch name ($BRANCH_NAME). Ensure you are in the correct branch formatted like 'issue-123-your-feature'."
+    exit 1
+fi
+
+echo "Issue Number Detected: #$ISSUE_NUMBER"
+echo "-------------------------------------------------"
+
+# Fetch the issue title from GitHub
+echo "Retrieving issue title from GitHub..."
+ISSUE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json title --jq '.title' | tr -cd '[[:alnum:]]._ ' | cut -c 1-50)
+echo "Issue Title: $ISSUE_TITLE"
+echo "-------------------------------------------------"
+
+# Interactive selection for commit type and scope
+echo "Select the type and scope of your changes:"
+COMMIT_TYPES=("feat" "fix" "build" "chore" "ci" "docs" "style" "refactor" "perf" "test" "revert" "NONE")
+COMMIT_SCOPES=("ui" "backend" "api" "tests" "deployment" "documentation" "NONE")
+
+# Check if fzf is installed
+if command -v fzf &> /dev/null; then
+    FZF_AVAILABLE=0
+else
+    FZF_AVAILABLE=0
+    echo "fzf is not available, switching to manual selection."
+fi
+
+# Interactive selection for commit type and scope
+echo "Select the type and scope of your changes:"
+if [ "$FZF_AVAILABLE" -eq 1 ]; then
+    SELECTED_TYPE=$(printf "%s\n" "${COMMIT_TYPES[@]}" | fzf --height=50% --reverse --prompt="Select commit type: ")
+    SELECTED_SCOPE=$(printf "%s\n" "${COMMIT_SCOPES[@]}" | fzf --height=50% --reverse --prompt="Select commit scope (or NONE for no scope): ")
+else
+    echo "Available commit types:"
+    for i in "${!COMMIT_TYPES[@]}"; do
+        echo "$((i+1)). ${COMMIT_TYPES[$i]}"
+    done
+    echo "Enter the number for the commit type:"
+    read -r type_num
+    SELECTED_TYPE=${COMMIT_TYPES[$((type_num-1))]}
+
+    echo "Available commit scopes:"
+    for i in "${!COMMIT_SCOPES[@]}"; do
+        echo "$((i+1)). ${COMMIT_SCOPES[$i]}"
+    done
+    echo "Enter the number for the commit scope (enter for NONE):"
+    read -r scope_num
+    if [ -n "$scope_num" ]; then
+        SELECTED_SCOPE=${COMMIT_SCOPES[$((scope_num-1))]}
+    else
+        SELECTED_SCOPE="NONE"
+    fi
+fi
+# Pre-define parentheses if scope is selected, otherwise set to an empty string
+SCOPE_PREFIX=""
+SCOPE_SUFFIX=""
+if [ "$SELECTED_SCOPE" != "NONE" ]; then
+    SCOPE_PREFIX="("
+    SCOPE_SUFFIX=")"
+else
+    SELECTED_SCOPE=""
+fi
+
+# Construct the PR title with proper quoting and handling for special characters
+PR_TITLE="${SELECTED_TYPE}${SCOPE_PREFIX}${SELECTED_SCOPE}${SCOPE_SUFFIX}: ${ISSUE_TITLE} (#$ISSUE_NUMBER)"
+echo "Generated PR Title: $PR_TITLE"
+echo "-------------------------------------------------"
+
+# Interaction for closing issue
+echo "Does this PR close the issue? (y/N)"
+read -r CLOSES_ISSUE_REPLY
+echo "-------------------------------------------------"
+
+# PR templates handling
+TEMPLATE_PATH=".github/PULL_REQUEST_TEMPLATE"
+SINGLE_TEMPLATE_PATH="$TEMPLATE_PATH.md" # Path for a single template
+
+echo "Checking for PR templates..."
+
+if [ -f "$SINGLE_TEMPLATE_PATH" ]; then
+    echo "Single PR template found."
+    SELECTED_TEMPLATE="$SINGLE_TEMPLATE_PATH"
+elif [ -d "$TEMPLATE_PATH" ]; then
+    TEMPLATE_FILES=("$TEMPLATE_PATH"/*.md)
+
+    # Check the number of templates
+    if [ ${#TEMPLATE_FILES[@]} -eq 1 ]; then
+        echo "Single PR template found in template directory."
+        SELECTED_TEMPLATE="${TEMPLATE_FILES[0]}"
+    elif [ ${#TEMPLATE_FILES[@]} -gt 1 ]; then
+        echo "Multiple PR templates found. Please select one:"
+        if [ "$FZF_AVAILABLE" -eq 1 ]; then
+            SELECTED_TEMPLATE=$(printf "%s\n" "${TEMPLATE_FILES[@]}" | fzf --height=50% --reverse)
+        else
+            echo "Available PR templates:"
+            for i in "${!TEMPLATE_FILES[@]}"; do
+                echo "$((i+1)). ${TEMPLATE_FILES[$i]##*/}" # Display just the filename
+            done
+            echo "Enter the number for the PR template:"
+            read -r template_num
+            if ! [[ $template_num =~ ^[0-9]+$ ]] || [ $template_num -lt 1 ] || [ $template_num -gt ${#TEMPLATE_FILES[@]} ]; then
+                echo "Invalid selection. Using the first template as default."
+                template_num=1
+            fi
+            SELECTED_TEMPLATE="${TEMPLATE_FILES[$((template_num-1))]}"
+        fi
+    else
+        echo "No PR template found in the template directory. Continuing without a template."
+        SELECTED_TEMPLATE=""
+    fi
+else
+    echo "No PR template found. Continuing without a template."
+    SELECTED_TEMPLATE=""
+fi
+
+# Construct ISSUE_CONTENT based on users choice
+if [[ $CLOSES_ISSUE_REPLY =~ ^[Yy]$ ]]; then
+    ISSUE_CONTENT="This PR resolves #$ISSUE_NUMBER (${ISSUE_TITLE})."
+else
+    ISSUE_CONTENT="Related to #$ISSUE_NUMBER (${ISSUE_TITLE})."
+fi
+
+# Prepare PR_BODY by replacing placeholder in the template or creating a new content
+if [ -n "$SELECTED_TEMPLATE" ]; then
+    PR_TEMPLATE_CONTENT=$(cat "$SELECTED_TEMPLATE")
+    # Replace the placeholder with ISSUE_CONTENT
+    # Assuming ISSUE_CONTENT and PR_TEMPLATE_CONTENT have been defined earlier in the script
+
+    # Pre-fill the PR body with the selected template and then replace the placeholder
+    # Replace the marker in the template with the actual issue-related content
+    # Prepare ISSUE_CONTENT for sed, ensuring it handles new lines correctly.
+    FORMATTED_ISSUE_CONTENT=$(echo "$ISSUE_CONTENT" | awk '{printf "%s\\n", $0}' ORS='')
+
+    # Directly replacing in sed with an escaped version for special characters
+    # Ensure that the placeholder in your PR template matches exactly, including spaces and asterisks
+    PR_BODY=$(echo "$PR_TEMPLATE_CONTENT" | sed "s|\*\* any additional useful context or info \*\*|$FORMATTED_ISSUE_CONTENT|")
+else
+    PR_BODY="$ISSUE_CONTENT"
+fi
+
+
+# Remove YAML front matter from PR template
+# This uses a sed command to delete everything between the first set of "---"
+PR_BODY_NO_HEADER=$(echo "$PR_BODY" | sed '/^---$/,/^---$/d')
+
+
+# Prepare the file for user editing
+echo "Please review the PR details in the editor. You can make additional changes as needed."
+TEMP_PR_BODY_FILE=$(mktemp)
+echo -e "$PR_BODY_NO_HEADER" > "$TEMP_PR_BODY_FILE"
+${EDITOR:-vi} "$TEMP_PR_BODY_FILE"
+PR_BODY=$(cat "$TEMP_PR_BODY_FILE")
+rm "$TEMP_PR_BODY_FILE"
+
+# Confirm before creating the PR
+echo "Review the PR details:"
+echo "Title: $PR_TITLE"
+echo "Body: $PR_BODY"
+echo "-------------------------------------------------"
+echo "Create the PR? (y/N)"
+read -r CREATE_PR_REPLY
+if [[ $CREATE_PR_REPLY =~ ^[Yy]$ ]]; then
+    # Create the pull request
+    gh pr create --title "$PR_TITLE" --body "$PR_BODY"
+else
+    echo "PR creation cancelled."
+fi
