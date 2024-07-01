@@ -33,6 +33,23 @@ select_branch() {
     echo $selected_branch
 }
 
+# Function to check if the repository is in a safe state to switch branches
+check_repo_state() {
+    # Check for rebase in progress
+    if [ -d "$(git rev-parse --git-path rebase-merge)" ] || \
+       [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+        echo "Error: Rebase in progress. Please complete or abort the rebase before switching branches."
+        exit 1
+    fi
+
+    # Check for merge in progress
+    if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+        echo "Error: Merge in progress. Please complete or abort the merge before switching branches."
+        exit 1
+    fi
+}
+
+
 # Main script starts here
 new_branch=""
 push_to_remote=false
@@ -55,6 +72,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Check repository state before proceeding
+check_repo_state
 
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 
@@ -99,11 +119,22 @@ create_wip() {
     fi
 }
 
+# Function to restore WIP commits
+restore_wip() {
+    if git log -1 --pretty=%B | grep -q "WIP-unstaged"; then
+        git reset HEAD~1
+    fi
+    if git log -1 --pretty=%B | grep -q "WIP"; then
+        git reset --soft HEAD~1
+    fi
+}
+
 # Create WIP commits if necessary
 create_wip
 
 git fetch origin
 
+# Switch to the new branch, creating it if necessary based on updated 'origin/master'
 # Switch to the new branch, creating it if necessary based on updated 'origin/master'
 if git rev-parse --verify "$new_branch" >/dev/null 2>&1; then
     git checkout "$new_branch"
@@ -113,14 +144,15 @@ else
         # If the branch exists on the remote, check it out and track the remote branch
         git checkout --track "origin/$new_branch"
     else
-        # If the branch does not exist on the remote, create and switch to new branch based on master
-        git fetch origin master:master && git checkout -b "$new_branch" master
+        # If the branch does not exist on the remote, create and switch to new branch based on origin/master
+        git fetch origin
+        git checkout -b "$new_branch" origin/master
         # Set up the remote tracking branch
-        git branch --set-upstream-to=origin/$new_branch $new_branch
-        
+        git push -u origin "$new_branch"
+
         # Push the new branch to remote only if the push flag is set
         if [ "$push_to_remote" = true ]; then
-            git push
+            echo "New branch '$new_branch' created and pushed to remote."
         else
             echo "New branch '$new_branch' created locally and tracking set up. Use 'git push' to push to remote when ready."
         fi
@@ -129,5 +161,3 @@ fi
 
 # Restore WIP state if coming back to a branch
 restore_wip
-$ ensure we have installed and are using the correct java
-sdk env install
