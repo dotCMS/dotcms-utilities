@@ -147,11 +147,13 @@ else
         # If the branch does not exist on the remote, create and switch to new branch based on origin/master
         git fetch origin
         git checkout -b "$new_branch" origin/master
-        # Set up the remote tracking branch
-        git push -u origin "$new_branch"
+
+        # Set up the upstream tracking branch without pushing
+        git branch --set-upstream-to=origin/$new_branch $new_branch
 
         # Push the new branch to remote only if the push flag is set
         if [ "$push_to_remote" = true ]; then
+            git push
             echo "New branch '$new_branch' created and pushed to remote."
         else
             echo "New branch '$new_branch' created locally and tracking set up. Use 'git push' to push to remote when ready."
