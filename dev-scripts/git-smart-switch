@@ -148,15 +148,15 @@ else
         git fetch origin
         git checkout -b "$new_branch" origin/master
 
-        # Set up the upstream tracking branch without pushing
-        git branch --set-upstream-to=origin/$new_branch $new_branch
-
         # Push the new branch to remote only if the push flag is set
         if [ "$push_to_remote" = true ]; then
-            git push
+            git push -u origin "$new_branch"
             echo "New branch '$new_branch' created and pushed to remote."
         else
-            echo "New branch '$new_branch' created locally and tracking set up. Use 'git push' to push to remote when ready."
+            # Set up the upstream configuration without pushing
+            git config "branch.$new_branch.remote" origin
+            git config "branch.$new_branch.merge" "refs/heads/$new_branch"
+            echo "New branch '$new_branch' created locally and tracking configured. Use 'git push' to push to remote when ready."
         fi
     fi
 fi
