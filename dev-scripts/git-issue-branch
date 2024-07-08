@@ -2,13 +2,18 @@
 
 sanitize_title() {
     local title="$1"
-    # Replace spaces with dashes, convert to lowercase, remove problematic characters, and manage special cases
-    local sanitized=$(echo "$title" | sed 's/ /-/g' | tr '[:upper:]' '[:lower:]' | sed 's/[\~^:?*\\[\].]//g' | sed 's/--*/-/g')
-    # Ensure the branch name does not end with a hyphen and truncate to 50 characters
-    sanitized=$(echo "$sanitized" | sed 's/-$//')
-    echo "${sanitized:0:50}"
+    # Convert to lowercase first
+    local sanitized=$(echo "$title" | tr '[:upper:]' '[:lower:]')
+    # Replace problematic characters with dashes, remove others
+    sanitized=$(echo "$sanitized" | sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9-]//g; s/--+/-/g; s/^-|-$//g')
+    # Truncate to 50 characters, trying to split on word boundaries
+    if [ ${#sanitized} -gt 50 ]; then
+        sanitized=$(echo "$sanitized" | cut -c1-50 | sed -E 's/-[^-]*$//g')
+    fi
+    # Remove any trailing dash that might remain after truncation
+    sanitized=$(echo "$sanitized" | sed 's/-$//g')
+    echo "$sanitized"
 }
-
 
 create_and_switch_branch() {
     local issue_number="$1"
@@ -22,7 +27,6 @@ create_and_switch_branch() {
     else
         sanitized_suffix=$(sanitize_title "$issue_title")
     fi
-
 
     local base_name="issue-${issue_number}-${sanitized_suffix}"
 
