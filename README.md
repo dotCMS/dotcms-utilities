@@ -22,7 +22,7 @@ To install or update all the Git extensions and required executables from the ma
 
 
 ```bash
-curl -sL https://raw.githubusercontent.com/dotcms/dotcms-utilities/master/install-dev-scripts.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/dotcms/dotcms-utilities/master/install-dev-scripts.sh)
 ```
 
 If running from source code, you can install the current version scripts by running:
