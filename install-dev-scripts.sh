@@ -241,8 +241,11 @@ update_shell_rc() {
         echo -e "${YELLOW}=======================================${NC}"
         echo -e "${YELLOW}Do you want to automatically add $BIN_DIR to your PATH in $rc_file? (y/n)${NC}"
         echo -e "${YELLOW}=======================================${NC}"
-        read -n 1 -r REPLY
+
+
+        read "REPLY?Enter your choice: "
         echo
+
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             echo "export PATH=\"\$PATH:$path_entry\"" >> "$rc_file"
             echo -e "${GREEN}Added $BIN_DIR to PATH in $rc_file. Please restart your terminal or run 'source $rc_file'.${NC}"
@@ -352,7 +355,7 @@ main() {
                 echo -e "${YELLOW}=======================================${NC}"
                 echo -e "${YELLOW}  Do you want to update? (y/n)${NC}"
                 echo -e "${YELLOW}=======================================${NC}"
-                read -n 1 -r REPLY
+                read "REPLY?Enter your choice: "
                 echo
                 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                     echo -e "${RED}Update cancelled.${NC}"
