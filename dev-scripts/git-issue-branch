@@ -1,4 +1,9 @@
 #!/bin/bash
+# Determine the directory of the calling script
+script_dir="$(dirname "$(realpath "$0")")"
+
+# Call the check_updates.sh script from the determined directory
+"$script_dir/check_updates.sh"
 
 sanitize_title() {
     local title="$1"
@@ -58,6 +63,7 @@ create_and_switch_branch() {
     gh issue develop "$issue_number" --name "$branch_name"
     git smart-switch "$branch_name"
 }
+
 
 # Fetch and select the issue using fzf or select
 if command -v fzf >/dev/null 2>&1; then
