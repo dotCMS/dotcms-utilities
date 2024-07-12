@@ -33,12 +33,9 @@ get_latest_commit_hash() {
 check_for_updates() {
     local installed_hash
     local latest_hash
-    echo "Checking for updates..."
-    ls -al "$BIN_DIR"
     # Read the installed version hash
     if [[ -f "$BIN_DIR/.version" ]]; then
         installed_hash=$(cat "$BIN_DIR/.version")
-        echo "installed_hash: $installed_hash"
     else
         installed_hash=""
     fi
@@ -48,7 +45,7 @@ check_for_updates() {
         local cache_mod_time=$(stat -f %m "$CACHE_FILE")
         local current_time=$(date +%s)
         local time_diff=$((current_time - cache_mod_time))
-        echo "time_diff: $time_diff"
+
         if [[ $time_diff -lt $CACHE_DURATION ]]; then
             latest_hash=$(cat "$CACHE_FILE")
         else
@@ -57,10 +54,9 @@ check_for_updates() {
                 echo "$latest_hash" > "$CACHE_FILE"
             fi
         fi
-        echo "latest_hash1: $latest_hash"
+
     else
         latest_hash=$(get_latest_commit_hash) || error_silent
-        echo "latest_hash2: $latest_hash"
         if [[ -n "$latest_hash" ]]; then
             echo "$latest_hash" > "$CACHE_FILE"
         fi
