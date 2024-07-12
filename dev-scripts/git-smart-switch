@@ -1,5 +1,4 @@
 #!/bin/bash
-./check_updates.sh
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
 
