@@ -18,11 +18,11 @@ This will check for the existence of and attempt to install the following
 
 ### Installation
 
-To install or update all the Git extensions and required executables from the master branch, run:
+To install or update all the Git extensions and required executables from the main branch, run:
 
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/dotcms/dotcms-utilities/master/install-dev-scripts.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/dotcms/dotcms-utilities/main/install-dev-scripts.sh)
 ```
 
 If running from source code, you can install the current version scripts by running:

@@ -15,6 +15,8 @@ VERSION="1.0.2"
 CHECK_UPDATES=true
 FORCE=false
 
+CACHE_FILE="$HOME/.dotcms/dev-scripts/.dotcms_latest_hash"
+
 # List of scripts to install (add your script names here)
 SCRIPTS=(
     "git-issue-branch"
@@ -59,6 +61,8 @@ check_for_updates() {
         echo -e "${RED}Failed to fetch the latest version information.${NC}"
         return 1
     fi
+
+    cat "${latest_hash}" > $CACHE_FILE
 
     if [[ -z "$installed_hash" || "$installed_hash" != "$latest_hash" ]]; then
         echo -e "${GREEN}An update is available.${NC}"
