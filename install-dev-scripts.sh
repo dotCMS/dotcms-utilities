@@ -265,37 +265,40 @@ install_script() {
     local base_url="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH/dev-scripts/"
 
     # Determine the script file extension based on naming convention
-    local local_script_path="${base_path}${script_name}"
-    local script_url="${base_url}${script_name}"
 
+    local script_name_ext="${script_name}"
     if [[ "$script_name" != git-* ]]; then
-        local_script_path="${local_script_path}.sh"
-        script_url="${script_url}.sh"
+        script_name_ext="${script_name}.sh"
     fi
+
+    local local_script_path="${base_path}${script_name_ext}"
+    local script_url="${base_url}${script_name_ext}"
+
 
     # Check if local script is available
     if [[ -f "$local_script_path" ]]; then
         echo -e "${BLUE}Using local version of $script_name...${NC}"
         cp "$local_script_path" "$BIN_DIR"
+        echo -e "${GREEN}$local_script_path has been installed to $BIN_DIR${NC}"
     else
-        echo -e "${YELLOW}Downloading $script_name from branch $BRANCH...${NC}"
+        echo -e "${YELLOW}Downloading $script_name_ext from branch $BRANCH...${NC}"
         tmp_file=$(mktemp)
         if curl -sL -w "%{http_code}" "$script_url" -o "$tmp_file" | grep -q "200"; then
-            mv "$tmp_file" "$BIN_DIR"
-            echo -e "${GREEN}$script_name has been installed to $BIN_DIR${NC}"
+            mv "$tmp_file" "$BIN_DIR/$script_name_ext"
+            echo -e "${GREEN}$script_name_ext has been installed to $BIN_DIR${NC}"
         else
             rm "$tmp_file"
-            error_exit "Failed to download $script_name from $script_url"
+            error_exit "Failed to download $script_name_ext from $script_url"
         fi
     fi
 
-    chmod +x "$BIN_DIR/$script_name"
+    chmod +x "$BIN_DIR/$script_name_ext"
 
     # Convert line endings to Unix format
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' 's/\r$//' "$BIN_DIR/$script_name"
+        sed -i '' 's/\r$//' "$BIN_DIR/$script_name_ext"
     else
-        sed -i 's/\r$//' "$BIN_DIR/$script_name"
+        sed -i 's/\r$//' "$BIN_DIR/$script_name_ext"
     fi
 }
 
