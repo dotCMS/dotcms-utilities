@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { DOTCMS_USER, DOTCMS_TOKEN_API } from '../dot-config.js';
 
-const DOTCMS_PATH = '/Users/zjaaal/Desktop/repos/dotcms'; // Change this to your dotcms path, this can be an env var
+const DOTCMS_PATH = '/Users/zjaaal/Desktop/repos/dotcms'; // Change this to your dotcms path
 
 const label = (Math.random() + 1).toString(36).substring(7); // This generates a random string to label the token
 
@@ -10,11 +10,18 @@ const project = process.argv[2] ?? 'nextjs'; // You can pass an argument to spec
 // Now that we are introducing new technologies to ema, we can have different configurations for each project
 const configByProject = {
     nextjs: {
-        tokenLabel: 'NEXT_PUBLIC_DOTCMS_AUTH_TOKEN', // Label we use in the .env.local file
-        path: `${DOTCMS_PATH}/core/examples/nextjs/.env.local`, // Path to the .env.local file
-        regex: 'NEXT_PUBLIC_DOTCMS_AUTH_TOKEN=.*', // Regex to find the token in the file
-        quotes: false, // If the token is wrapped in quotes
-        separator: '=' // Separator between the token label and the token
+        tokenLabel: 'NEXT_PUBLIC_DOTCMS_AUTH_TOKEN',
+        path: `${DOTCMS_PATH}/core/examples/nextjs/.env.local`,
+        regex: 'NEXT_PUBLIC_DOTCMS_AUTH_TOKEN=.*',
+        quotes: false,
+        separator: '='
+    },
+    astro: {
+        tokenLabel: 'PUBLIC_DOTCMS_AUTH_TOKEN',
+        path: `${DOTCMS_PATH}/core/examples/astro/.env.local`,
+        regex: 'PUBLIC_DOTCMS_AUTH_TOKEN=.*',
+        quotes: false,
+        separator: '='
     },
     vuejs: {
         tokenLabel: 'VITE_DOTCMS_TOKEN',
@@ -32,7 +39,6 @@ const configByProject = {
     }
 };
 
-// We can make this function a common util
 fetch(DOTCMS_TOKEN_API, {
     method: 'POST',
     headers: {
