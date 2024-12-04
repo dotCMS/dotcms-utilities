@@ -16,7 +16,7 @@ This script automates the setup of a local development environment for DotCMS us
 
 3. **TLS Certificate Management**:
    - Generates a secure TLS certificate using `mkcert`.
-   - Stores certificates in a hidden folder in the user's home directory (`~/.dotcms-certificates`).
+   - Stores certificates in a hidden folder in the user's home directory (`~/.dotcms/certificates`).
    - Creates or updates a Kubernetes secret for the certificate.
 
 4. **Namespace and Secret Setup**:
@@ -52,7 +52,7 @@ This script automates the setup of a local development environment for DotCMS us
 
 ## Troubleshooting
 - **Kubernetes Not Found**: Ensure Docker Desktop is running and Kubernetes is enabled.
-- **Certificate Issues**: Delete the `~/.dotcms-certificates` folder and rerun the script to regenerate certificates.
+- **Certificate Issues**: Delete the `~/.dotcms/certificates` folder and rerun the script to regenerate certificates.
 - **Hosts File Permissions**: Run the script with `sudo` if it cannot update the `/etc/hosts` file.
 
 ---
