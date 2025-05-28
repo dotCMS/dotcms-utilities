@@ -1,0 +1,95 @@
+#!/bin/bash
+# Determine the directory of the calling script
+script_dir="$(dirname "$(realpath "$0")")"
+
+# Call the check_updates.sh script from the determined directory
+"$script_dir/check_updates.sh"
+
+sanitize_title() {
+    local title="$1"
+    # Convert to lowercase first
+    local sanitized=$(echo "$title" | tr '[:upper:]' '[:lower:]')
+    # Replace problematic characters with dashes, remove others
+    sanitized=$(echo "$sanitized" | sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9-]//g; s/--+/-/g; s/^-|-$//g')
+    # Truncate to 50 characters, trying to split on word boundaries
+    if [ ${#sanitized} -gt 50 ]; then
+        sanitized=$(echo "$sanitized" | cut -c1-50 | sed -E 's/-[^-]*$//g')
+    fi
+    # Remove any trailing dash that might remain after truncation
+    sanitized=$(echo "$sanitized" | sed 's/-$//g')
+    echo "$sanitized"
+}
+
+create_and_switch_branch() {
+    local issue_number="$1"
+    local issue_title="$2"
+    local custom_suffix="$3"
+    local sanitized_suffix
+
+    # Decide which suffix to use and sanitize it
+    if [ -n "$custom_suffix" ]; then
+        sanitized_suffix=$(sanitize_title "$custom_suffix")
+    else
+        sanitized_suffix=$(sanitize_title "$issue_title")
+    fi
+
+    local base_name="issue-${issue_number}-${sanitized_suffix}"
+
+    echo "base_name = ${base_name}"
+
+    local branch_name
+    local max_index=0
+
+    # Check for existing branches and determine the next index
+    local branches=$(git branch --list | sed 's/^\*//g' | tr -d '[:space:]')
+    for branch in $branches; do
+        if [[ $branch =~ ^${base_name}(-([0-9]+))?$ ]]; then
+            local index="${BASH_REMATCH[2]}"
+            if [[ "$index" -gt "$max_index" ]]; then
+                max_index="$index"
+            fi
+        fi
+    done
+
+    # Determine the new branch name, appending a number if necessary
+    if [[ $max_index -gt 0 ]]; then
+        branch_name="${base_name}-$((max_index + 1))"
+    else
+        branch_name="${base_name}"
+    fi
+
+    # Create and switch to the new branch
+    echo "Creating and switching to a new branch: $branch_name."
+    gh issue develop "$issue_number" --name "$branch_name"
+    git smart-switch "$branch_name"
+}
+
+# Create a temporary file for the issue content
+TEMP_FILE=$(mktemp)
+
+# Prompt for initial issue title
+read -p "Enter issue title: " ISSUE_TITLE
+
+# Write the title to the temp file
+echo "Replace this with the issue description" > "$TEMP_FILE"
+
+# Open the editor for the user to add the body
+${EDITOR:-vim} "$TEMP_FILE"
+
+# Create the issue using the file
+echo "Creating new issue..."
+NEW_ISSUE=$(gh issue create --title "$ISSUE_TITLE" -F "$TEMP_FILE")
+
+# Clean up the temporary file
+rm "$TEMP_FILE"
+
+# Extract issue number from the created issue URL
+ISSUE_NUMBER=$(echo "$NEW_ISSUE" | grep -o '[0-9]*$')
+
+# Fetch updates from upstream
+echo "Fetching updates from remote..."
+git fetch
+
+# Prompt user for custom branch suffix
+read -p "Enter custom branch suffix (press Enter to use the default): " CUSTOM_SUFFIX
+create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX" 

@@ -19,6 +19,7 @@ CACHE_FILE="$HOME/.dotcms/dev-scripts/.dotcms_latest_hash"
 
 # List of scripts to install (add your script names here)
 SCRIPTS=(
+    "git-new-issue-branch"
     "git-issue-branch"
     "git-issue-pr"
     "git-smart-switch"
