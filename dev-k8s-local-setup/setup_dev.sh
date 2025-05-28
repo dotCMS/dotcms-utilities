@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define constants
-NAMESPACE="github-app"
+NAMESPACE="dotcms-dev"
 TLS_SECRET="developer-certificate-secret"
 HOSTNAME="dotcms.local"
 LOCALHOST="127.0.0.1"
