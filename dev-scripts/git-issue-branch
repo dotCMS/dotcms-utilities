@@ -1,9 +1,50 @@
 #!/bin/bash
+
+# git-issue-branch - Work with GitHub issues and create/switch branches
+# Usage: git issue-branch [--help]
+
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
 
 # Call the check_updates.sh script from the determined directory
 "$script_dir/check_updates.sh"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Show help message
+show_help() {
+    echo -e "${BLUE}git-issue-branch - Work with GitHub issues and create/switch branches${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  git issue-branch [--help]"
+    echo ""
+    echo -e "${YELLOW}Description:${NC}"
+    echo "  Interactive tool to select from your assigned or recently created GitHub issues"
+    echo "  and create/switch to branches. Shows issues with PR status indicators."
+    echo ""
+    echo -e "${YELLOW}Features:${NC}"
+    echo "  • Lists issues assigned to you or recently created by you"
+    echo "  • Shows [has PR] indicator for issues with existing pull requests"
+    echo "  • Most recently updated issues appear first"
+    echo "  • Create new branches or switch to existing linked branches"
+    echo "  • Choose between clean branch from main or branch from current state"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  --help, -h    Show this help message"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  git issue-branch          # Interactive issue and branch selection"
+    echo ""
+    echo -e "${YELLOW}Branch Naming:${NC}"
+    echo "  • Format: issue-{number}-{sanitized-title}"
+    echo "  • Automatic conflict resolution with numbered suffixes"
+    echo "  • Branches are automatically linked to GitHub issues"
+}
 
 sanitize_title() {
     local title="$1"
@@ -59,42 +100,222 @@ create_and_switch_branch() {
     fi
 
     # Create and switch to the new branch
-    echo "Creating and switching to a new branch: $branch_name."
+    echo -e "${GREEN}Creating and switching to a new branch: $branch_name${NC}"
     gh issue develop "$issue_number" --name "$branch_name"
     git smart-switch "$branch_name"
 }
 
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option '$1'${NC}"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# Get current GitHub user
+CURRENT_USER=$(gh api user --jq '.login')
+
+# Fetch issues assigned to me and recently created by me with additional fields for ordering
+ASSIGNED_ISSUES=$(gh issue list --assignee "@me" --json number,title,author,updatedAt --jq '.[] | "\(.number) \(.title) [assigned] \(.updatedAt)"')
+CREATED_ISSUES=$(gh issue list --author "@me" --limit 20 --json number,title,author,updatedAt --jq '.[] | "\(.number) \(.title) [created] \(.updatedAt)"')
+
+# Get PR information for each issue to add PR status indicators
+get_pr_status() {
+    local issue_num="$1"
+    local pr_count=$(gh pr list --search "linked:$issue_num" --json number --jq 'length')
+    if [ "$pr_count" -gt 0 ]; then
+        echo "[has PR]"
+    else
+        echo ""
+    fi
+}
+
+# Combine and deduplicate issues (keeping the assigned tag if both exist)
+COMBINED_ISSUES=$(echo -e "$ASSIGNED_ISSUES\n$CREATED_ISSUES" | awk '
+{
+    # Simple parsing using basic awk features (compatible with macOS awk)
+    if ($0 ~ /^[0-9]+ .+ \[(assigned|created)\]/) {
+        # Extract issue number (first field)
+        issue_num = $1
+        
+        # Determine status
+        if ($0 ~ /\[assigned\]/) {
+            status = "assigned"
+        } else {
+            status = "created"
+        }
+        
+        # Use the full line for deduplication logic
+        full_line = $0
+    } else {
+        next  # Skip malformed lines
+    }
+    
+    # If we have seen this issue before and it was assigned, keep the assigned version
+    if (issue_num in seen && seen[issue_num] ~ /\[assigned\]/) {
+        next
+    }
+    # If this is assigned version and we have seen it before, replace the previous one
+    if (status == "assigned") {
+        seen[issue_num] = full_line
+        issues[issue_num] = full_line
+    } else if (!(issue_num in seen)) {
+        seen[issue_num] = full_line
+        issues[issue_num] = full_line
+    }
+}
+END {
+    # Output all unique issues (deduplication done, just print them)
+    for (num in issues) {
+        print issues[num]
+    }
+}')
+
+# Add PR status to each issue
+ISSUES_WITH_PR_STATUS=""
+while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+        issue_num=$(echo "$line" | awk '{print $1}')
+        pr_status=$(get_pr_status "$issue_num")
+        # Remove the timestamp from the line and add PR status
+        clean_line=$(echo "$line" | sed -E 's/ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$//')
+        if [[ -n "$pr_status" ]]; then
+            ISSUES_WITH_PR_STATUS="${ISSUES_WITH_PR_STATUS}${clean_line} ${pr_status}\n"
+        else
+            ISSUES_WITH_PR_STATUS="${ISSUES_WITH_PR_STATUS}${clean_line}\n"
+        fi
+    fi
+done <<< "$COMBINED_ISSUES"
+
+COMBINED_ISSUES=$(echo -e "$ISSUES_WITH_PR_STATUS" | sed '$d')  # Remove last empty line
 
 # Fetch and select the issue using fzf or select
 if command -v fzf >/dev/null 2>&1; then
-    SELECTED_ISSUE=$(gh issue list --assignee "@me" --json number,title --jq '.[] | "\(.number) \(.title)"' | fzf --height 50% --reverse)
+    SELECTED_ISSUE=$(echo "$COMBINED_ISSUES" | fzf --height 50% --reverse --header "Select an issue (assigned to you or recently created by you)")
 else
-    echo "fzf is not installed, using select for issue choice."
+    echo -e "${YELLOW}fzf is not installed, using select for issue choice.${NC}"
+    echo -e "${BLUE}Issues assigned to you or recently created by you:${NC}"
     PS3="Select an issue: "
-    ISSUE_LIST=$(gh issue list --assignee "@me" --json number,title --jq '.[] | "\(.number) \(.title)"')
-    select issue_option in $ISSUE_LIST; do
+    select issue_option in $COMBINED_ISSUES; do
         SELECTED_ISSUE=$issue_option
         break
     done
 fi
 
-# Extract issue number and title
+# Extract issue number and title (removing the [assigned] or [created] and [has PR] tags)
 ISSUE_NUMBER=$(echo "$SELECTED_ISSUE" | awk '{print $1}')
-ISSUE_TITLE=$(echo "$SELECTED_ISSUE" | cut -d ' ' -f2-)
+ISSUE_TITLE=$(echo "$SELECTED_ISSUE" | sed -E 's/^[0-9]+ (.+) \[(assigned|created)\]( \[has PR\])?$/\1/')
+
+# Check current branch and offer branch creation options
+CURRENT_BRANCH=$(git branch --show-current)
+echo ""
+echo -e "${BLUE}Current branch:${NC} ${GREEN}$CURRENT_BRANCH${NC}"
+echo ""
+echo -e "${YELLOW}Choose how to create your new branch:${NC}"
+echo -e "${BLUE}1.${NC} Create clean branch from main/master (default)"
+echo -e "${BLUE}2.${NC} Create branch based on current working state"
+echo -e -n "${BLUE}Select option (1-2) [1]:${NC} "
+read BRANCH_CHOICE
+
+# Default to option 1 if no choice is made
+if [[ -z "$BRANCH_CHOICE" ]]; then
+    BRANCH_CHOICE=1
+fi
+
+case $BRANCH_CHOICE in
+    2)
+        # Create branch based on current state
+        echo -e "${YELLOW}Creating branch based on current working state...${NC}"
+        
+        # Prompt for custom branch suffix
+        echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default based on issue title):${NC} "
+        read CUSTOM_SUFFIX
+        
+        # Decide which suffix to use and sanitize it
+        if [ -n "$CUSTOM_SUFFIX" ]; then
+            sanitized_suffix=$(sanitize_title "$CUSTOM_SUFFIX")
+        else
+            sanitized_suffix=$(sanitize_title "$ISSUE_TITLE")
+        fi
+        
+        NEW_BRANCH_NAME="issue-${ISSUE_NUMBER}-${sanitized_suffix}"
+        
+        # Check if the new branch name already exists
+        if git show-ref --verify --quiet refs/heads/"$NEW_BRANCH_NAME"; then
+            echo -e "${YELLOW}Branch '$NEW_BRANCH_NAME' already exists!${NC}"
+            
+            # Offer options for handling existing branch
+            echo -e "${BLUE}What would you like to do?${NC}"
+            echo -e "${BLUE}1.${NC} Add a number suffix (e.g., ${NEW_BRANCH_NAME}-2)"
+            echo -e "${BLUE}2.${NC} Enter a different suffix"
+            echo -e "${BLUE}3.${NC} Cancel and create clean branch instead"
+            echo -e -n "${BLUE}Select option (1-3):${NC} "
+            read CONFLICT_CHOICE
+            
+            case $CONFLICT_CHOICE in
+                1)
+                    # Find next available number suffix
+                    counter=2
+                    while git show-ref --verify --quiet refs/heads/"${NEW_BRANCH_NAME}-${counter}"; do
+                        ((counter++))
+                    done
+                    NEW_BRANCH_NAME="${NEW_BRANCH_NAME}-${counter}"
+                    ;;
+                2)
+                    echo -e -n "${BLUE}Enter a different suffix:${NC} "
+                    read NEW_CUSTOM_SUFFIX
+                    sanitized_suffix=$(sanitize_title "$NEW_CUSTOM_SUFFIX")
+                    NEW_BRANCH_NAME="issue-${ISSUE_NUMBER}-${sanitized_suffix}"
+                    ;;
+                3)
+                    echo -e "${YELLOW}Creating clean branch instead...${NC}"
+                    BRANCH_CHOICE=1
+                    ;;
+            esac
+        fi
+        
+        # Create branch from current state if we have a valid new name
+        if [[ -n "$NEW_BRANCH_NAME" && "$BRANCH_CHOICE" == "2" ]]; then
+            echo -e "${YELLOW}Creating branch '$NEW_BRANCH_NAME' from current state${NC}"
+            git smart-switch "$NEW_BRANCH_NAME" --keep
+            
+            # Link the new branch to the issue
+            gh issue develop "$ISSUE_NUMBER" --name "$NEW_BRANCH_NAME"
+            
+            echo -e "${GREEN}✓ Branch created and linked to issue #${ISSUE_NUMBER}${NC}"
+            echo -e "${BLUE}Your current working state has been preserved in the new branch.${NC}"
+            exit 0
+        fi
+        ;;
+esac
+
+# If we get here, create a clean branch (option 1 or fallback)
+echo -e "${YELLOW}Creating clean branch from main/master...${NC}"
+echo ""
 
 # Fetch updates from upstream
-echo "Fetching updates from remote..."
+echo -e "${BLUE}Fetching updates from remote...${NC}"
 git fetch
 
 # Check for linked branches
 LINKED_BRANCHES=$(gh issue develop "$ISSUE_NUMBER" -l)
 if [[ -z "$LINKED_BRANCHES" ]]; then
     # Prompt user for custom branch suffix if there are no linked branches or they want to create a new one
-    read -p "Enter custom branch suffix (press Enter to use the default): " CUSTOM_SUFFIX
+    echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default):${NC} "
+    read CUSTOM_SUFFIX
     create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
 else
     # Linked branches exist, offer them for selection
-    echo "Linked branches found. Choose a branch to checkout or CREATE NEW BRANCH:"
+    echo -e "${BLUE}Linked branches found. Choose a branch to checkout or CREATE NEW BRANCH:${NC}"
     if command -v fzf >/dev/null 2>&1; then
         SELECTED_BRANCH=$(echo -e "CREATE NEW BRANCH\n$LINKED_BRANCHES" | fzf --height 50% --reverse | awk '{print $1}')
     else
@@ -107,11 +328,12 @@ else
     # Handle branch selection
     if [[ "$SELECTED_BRANCH" == "CREATE NEW BRANCH" ]]; then
         # Prompt for custom branch suffix
-        read -p "Enter custom branch suffix (press Enter to use the default): " CUSTOM_SUFFIX
+        echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default):${NC} "
+        read CUSTOM_SUFFIX
         create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
     elif [[ -n "$SELECTED_BRANCH" ]]; then
         # Existing branch selected, checkout
-        echo "Switching to the existing branch: $SELECTED_BRANCH."
+        echo -e "${YELLOW}Switching to the existing branch: $SELECTED_BRANCH.${NC}"
         git smart-switch "$SELECTED_BRANCH"
     fi
 fi
