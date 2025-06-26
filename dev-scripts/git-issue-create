@@ -1,0 +1,1615 @@
+#!/bin/bash
+
+# git-issue-create - Streamlined GitHub issue creation with team support
+# Usage: git issue-create [title] [--branch] [--team TEAM] [--type TYPE] [--priority PRIORITY]
+
+# Determine the directory of the calling script
+script_dir="$(dirname "$(realpath "$0")")"
+
+# Call the check_updates.sh script from the determined directory
+"$script_dir/check_updates.sh"
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Config file for storing user preferences
+CONFIG_FILE="$HOME/.dotcms/issue-config.json"
+
+# Cache directory and files
+CACHE_DIR="$HOME/.dotcms/cache"
+LABELS_CACHE_FILE="$CACHE_DIR/labels"
+TYPES_CACHE_FILE="$CACHE_DIR/types"
+CACHE_EXPIRY_HOURS=24
+
+# Default values
+TEAM="Platform"
+TYPE="Bug"
+PRIORITY="3 Medium"
+CREATE_BRANCH=false
+CREATE_BRANCH_KEEP_STATE=false
+ASSIGNEE=""
+REPOSITORY=""
+PROJECT_ID="7"  # dotCMS - Product Planning V2
+PROJECT_STATUS="New"  # Default status for new issues
+PROJECT_EFFORT=""
+DRY_RUN=false
+
+# Track which values were set via command line
+CLI_TEAM_SET=false
+CLI_TYPE_SET=false
+CLI_PRIORITY_SET=false
+
+# Ensure config and cache directories exist
+mkdir -p "$(dirname "$CONFIG_FILE")"
+mkdir -p "$CACHE_DIR"
+
+# Cache management functions
+is_cache_valid() {
+    local cache_file="$1"
+    if [[ ! -f "$cache_file" ]]; then
+        return 1
+    fi
+    
+    local cache_age_hours=$(( ($(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0)) / 3600 ))
+    [[ $cache_age_hours -lt $CACHE_EXPIRY_HOURS ]]
+}
+
+clear_cache() {
+    rm -f "$LABELS_CACHE_FILE"* "$TYPES_CACHE_FILE"* 2>/dev/null
+    echo -e "${GREEN}✓ Cache cleared${NC}"
+}
+
+# Load saved configuration
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        if command -v jq >/dev/null 2>&1; then
+            SAVED_TEAM=$(jq -r '.default_team // "Platform"' "$CONFIG_FILE" 2>/dev/null || echo "Platform")
+            SAVED_TYPE=$(jq -r '.default_type // "Enhancement"' "$CONFIG_FILE" 2>/dev/null || echo "Enhancement")
+            SAVED_PRIORITY=$(jq -r '.default_priority // "3 Medium"' "$CONFIG_FILE" 2>/dev/null || echo "3 Medium")
+            SAVED_PROJECT_ID=$(jq -r '.default_project_id // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+        fi
+    fi
+}
+
+# Save configuration
+save_config() {
+    local team="$1"
+    local type="$2" 
+    local priority="$3"
+    local project_id="$4"
+    
+    if command -v jq >/dev/null 2>&1; then
+        cat > "$CONFIG_FILE" << EOF
+{
+    "default_team": "$team",
+    "default_type": "$type", 
+    "default_priority": "$priority",
+    "default_project_id": "$project_id",
+    "last_updated": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+    fi
+}
+
+# Get available labels for a repository (with caching)
+get_repo_labels() {
+    local repo="$1"
+    local cache_file="${LABELS_CACHE_FILE}-$(echo "$repo" | tr '/' '-')"
+    
+    # Check if cache is valid and not in refresh mode
+    if [[ "$REFRESH_CACHE" != true ]] && is_cache_valid "$cache_file"; then
+        cat "$cache_file" 2>/dev/null || echo ""
+    else
+        local labels=$(gh api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null || echo "")
+        echo "$labels" > "$cache_file" 2>/dev/null
+        echo "$labels"
+    fi
+}
+
+# Find matching label with fuzzy matching
+find_label() {
+    local labels="$1"
+    local search_term="$2"
+    
+    # Try exact match first
+    echo "$labels" | grep -x "$search_term" && return 0
+    
+    # Try case-insensitive exact match
+    echo "$labels" | grep -ix "$search_term" && return 0
+    
+    # Try partial match with common variations
+    echo "$labels" | grep -i "$search_term" | head -1
+}
+
+# Get team labels dynamically from repository
+get_team_labels() {
+    local repo="$1"
+    gh api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null | grep "^Team :" || echo ""
+}
+
+# Get organization's configured issue types with caching
+get_org_issue_types() {
+    local org="$1"
+    local cache_file="${TYPES_CACHE_FILE}-${org}-types"
+    
+    # Check if cache is valid and not in refresh mode
+    if [[ "$REFRESH_CACHE" != true ]] && is_cache_valid "$cache_file"; then
+        cat "$cache_file" 2>/dev/null | jq -r '.[]? | .name' 2>/dev/null || echo ""
+    else
+        local types_data=$(gh api graphql -f query="query { organization(login: \"$org\") { issueTypes(first: 20) { nodes { id name description } } } }" 2>/dev/null | jq '.data.organization.issueTypes.nodes' 2>/dev/null || echo "[]")
+        echo "$types_data" > "$cache_file" 2>/dev/null
+        echo "$types_data" | jq -r '.[]? | .name' 2>/dev/null || echo ""
+    fi
+}
+
+# Get issue type info with IDs for selection (cached)
+get_issue_type_details() {
+    local org="$1"
+    local cache_file="${TYPES_CACHE_FILE}-${org}-types"
+    
+    # Check if cache is valid and not in refresh mode
+    if [[ "$REFRESH_CACHE" != true ]] && is_cache_valid "$cache_file"; then
+        cat "$cache_file" 2>/dev/null | jq -c '.[]?' 2>/dev/null || echo ""
+    else
+        local types_data=$(gh api graphql -f query="query { organization(login: \"$org\") { issueTypes(first: 20) { nodes { id name description } } } }" 2>/dev/null | jq '.data.organization.issueTypes.nodes' 2>/dev/null || echo "[]")
+        echo "$types_data" > "$cache_file" 2>/dev/null
+        echo "$types_data" | jq -c '.[]?' 2>/dev/null || echo ""
+    fi
+}
+
+# Get issue type info for display (cached)
+get_issue_type_info() {
+    local org="$1"
+    local cache_file="${TYPES_CACHE_FILE}-${org}-types"
+    
+    # Check if cache is valid and not in refresh mode
+    if [[ "$REFRESH_CACHE" != true ]] && is_cache_valid "$cache_file"; then
+        cat "$cache_file" 2>/dev/null | jq -r '.[]? | "\(.name):\(.description // "")"' 2>/dev/null || echo ""
+    else
+        local types_data=$(gh api graphql -f query="query { organization(login: \"$org\") { issueTypes(first: 20) { nodes { id name description } } } }" 2>/dev/null | jq '.data.organization.issueTypes.nodes' 2>/dev/null || echo "[]")
+        echo "$types_data" > "$cache_file" 2>/dev/null
+        echo "$types_data" | jq -r '.[]? | "\(.name):\(.description // "")"' 2>/dev/null || echo ""
+    fi
+}
+
+# Get issue type ID by name (cached)
+get_issue_type_id() {
+    local org="$1"
+    local type_name="$2"
+    local cache_file="${TYPES_CACHE_FILE}-${org}-types"
+    
+    # Check if cache is valid and not in refresh mode
+    if [[ "$REFRESH_CACHE" != true ]] && is_cache_valid "$cache_file"; then
+        cat "$cache_file" 2>/dev/null | jq -r ".[]? | select(.name == \"$type_name\") | .id" 2>/dev/null || echo ""
+    else
+        local types_data=$(gh api graphql -f query="query { organization(login: \"$org\") { issueTypes(first: 20) { nodes { id name description } } } }" 2>/dev/null | jq '.data.organization.issueTypes.nodes' 2>/dev/null || echo "[]")
+        echo "$types_data" > "$cache_file" 2>/dev/null
+        echo "$types_data" | jq -r ".[]? | select(.name == \"$type_name\") | .id" 2>/dev/null || echo ""
+    fi
+}
+
+# Get repository ID for GraphQL
+get_repository_id() {
+    local repo="$1"
+    local owner=$(echo "$repo" | cut -d'/' -f1)
+    local name=$(echo "$repo" | cut -d'/' -f2)
+    gh api graphql -f query="query { repository(owner: \"$owner\", name: \"$name\") { id } }" 2>/dev/null | jq -r '.data.repository.id' 2>/dev/null || echo ""
+}
+
+# Create issue with type using GraphQL
+create_issue_with_type() {
+    local repo="$1"
+    local title="$2"
+    local body="$3"
+    local issue_type="$4"
+    local labels="$5"
+    local assignee="$6"
+    
+    # Get repository ID
+    local repo_id=$(get_repository_id "$repo")
+    if [[ -z "$repo_id" ]]; then
+        echo "Error: Could not get repository ID for $repo"
+        return 1
+    fi
+    
+    # Get organization and issue type ID
+    local org_name=$(echo "$repo" | cut -d'/' -f1)
+    local issue_type_id=""
+    if [[ -n "$issue_type" ]]; then
+        issue_type_id=$(get_issue_type_id "$org_name" "$issue_type")
+    fi
+    
+    # Prepare label IDs if labels are provided
+    local label_ids="[]"
+    if [[ -n "$labels" ]]; then
+        # Get label IDs (this would need to be implemented for full label support)
+        # For now, we'll use the standard gh command and then update the issue type
+        echo "Note: Using standard creation with post-creation type update for label support"
+        
+        # Create issue with standard command first
+        local gh_cmd="gh issue create --repo \"$repo\" --title \"$title\" --body \"$body\""
+        if [[ -n "$labels" ]]; then
+            gh_cmd+=" --label \"$labels\""
+        fi
+        if [[ -n "$assignee" ]]; then
+            gh_cmd+=" --assignee \"$assignee\""
+        fi
+        
+        local issue_output=$(eval "$gh_cmd")
+        local issue_url=$(echo "$issue_output" | grep -o 'https://github.com/[^[:space:]]*')
+        local issue_number=$(echo "$issue_url" | grep -o '[0-9]*$')
+        
+        # Update issue type if we have one
+        if [[ -n "$issue_type_id" ]]; then
+            echo "Setting issue type to: $issue_type"
+            update_issue_type "$repo" "$issue_number" "$issue_type_id"
+        fi
+        
+        echo "$issue_output"
+        return 0
+    fi
+    
+    # Pure GraphQL approach (for when no labels needed)
+    local mutation_vars=""
+    local mutation_input="repositoryId: \"$repo_id\", title: \"$title\", body: \"$body\""
+    
+    if [[ -n "$issue_type_id" ]]; then
+        mutation_input="$mutation_input, issueTypeId: \"$issue_type_id\""
+    fi
+    
+    gh api graphql -f query="
+        mutation {
+            createIssue(input: { $mutation_input }) {
+                issue {
+                    id
+                    number
+                    url
+                }
+            }
+        }
+    " --jq '.data.createIssue.issue | "\(.url)"'
+}
+
+# Update issue type for existing issue
+update_issue_type() {
+    local repo="$1"
+    local issue_number="$2"
+    local issue_type_id="$3"
+    
+    # Get issue ID
+    local issue_id=$(gh api "repos/$repo/issues/$issue_number" --jq '.node_id')
+    
+    if [[ -n "$issue_id" && -n "$issue_type_id" ]]; then
+        gh api graphql -f query="
+            mutation {
+                updateIssue(input: { id: \"$issue_id\", issueTypeId: \"$issue_type_id\" }) {
+                    issue {
+                        id
+                        issueType {
+                            name
+                        }
+                    }
+                }
+            }
+        " --jq '.data.updateIssue.issue.issueType.name' >/dev/null 2>&1
+        
+        if [[ $? -eq 0 ]]; then
+            echo "  ${GREEN}✓ Issue type set successfully${NC}"
+        else
+            echo "  ${YELLOW}⚠ Could not set issue type automatically${NC}"
+        fi
+    fi
+}
+
+# Get project node ID using GraphQL
+get_project_node_id() {
+    local org="$1"
+    local project_number="$2"
+    
+    gh api graphql -f query="
+        query {
+            organization(login: \"$org\") {
+                projectV2(number: $project_number) {
+                    id
+                }
+            }
+        }
+    " --jq '.data.organization.projectV2.id' 2>/dev/null || echo ""
+}
+
+# Get issue node ID
+get_issue_node_id() {
+    local repo="$1"
+    local issue_number="$2"
+    
+    gh api "repos/$repo/issues/$issue_number" --jq '.node_id' 2>/dev/null || echo ""
+}
+
+# Add issue to project using GraphQL
+add_issue_to_project_v2() {
+    local project_id="$1"
+    local content_id="$2"
+    
+    if [[ -z "$project_id" || -z "$content_id" ]]; then
+        return 1
+    fi
+    
+    # Add the issue to the project and get the project item ID
+    local project_item_id=$(gh api graphql -f query="
+        mutation {
+            addProjectV2ItemById(input: {
+                projectId: \"$project_id\"
+                contentId: \"$content_id\"
+            }) {
+                item {
+                    id
+                }
+            }
+        }
+    " --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null)
+    
+    if [[ -n "$project_item_id" ]]; then
+        echo "$project_item_id"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Get project field ID for "Estimated Effort" 
+get_project_effort_field_id() {
+    local project_id="$1"
+    
+    gh api graphql -f query="
+        query {
+            node(id: \"$project_id\") {
+                ... on ProjectV2 {
+                    fields(first: 20) {
+                        nodes {
+                            ... on ProjectV2Field {
+                                id
+                                name
+                                dataType
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    " --jq '.data.node.fields.nodes[] | select(.name == "Estimated Effort") | .id' 2>/dev/null || echo ""
+}
+
+# Get effort option ID by value
+get_effort_option_id() {
+    local project_id="$1"
+    local effort_value="$2"
+    
+    gh api graphql -f query="
+        query {
+            node(id: \"$project_id\") {
+                ... on ProjectV2 {
+                    fields(first: 20) {
+                        nodes {
+                            ... on ProjectV2SingleSelectField {
+                                id
+                                name
+                                options {
+                                    id
+                                    name
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    " --jq ".data.node.fields.nodes[] | select(.name == \"Estimated Effort\") | .options[] | select(.name == \"$effort_value\") | .id" 2>/dev/null || echo ""
+}
+
+# Update project item field value for numeric fields
+update_project_item_numeric_field() {
+    local project_id="$1"
+    local item_id="$2"
+    local field_id="$3"
+    local numeric_value="$4"
+    
+    if [[ -z "$project_id" || -z "$item_id" || -z "$field_id" || -z "$numeric_value" ]]; then
+        return 1
+    fi
+    
+    gh api graphql -f query="
+        mutation {
+            updateProjectV2ItemFieldValue(input: {
+                projectId: \"$project_id\"
+                itemId: \"$item_id\"
+                fieldId: \"$field_id\"
+                value: {
+                    number: $numeric_value
+                }
+            }) {
+                projectV2Item {
+                    id
+                }
+            }
+        }
+    " --jq '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1
+    
+    return $?
+}
+
+# Legacy team label function for backward compatibility
+get_team_label() {
+    case "$1" in
+        Platform) echo "Team : Platform" ;;
+        CloudEng) echo "Team : Cloud Eng" ;;
+        QA) echo "Team : QA" ;;
+        Frontend) echo "Team : Frontend" ;;
+        Backend) echo "Team : Backend" ;;
+        *) echo "" ;;
+    esac
+}
+
+# Generic label selection system
+# Get labels by prefix from cached repository labels
+get_labels_by_prefix() {
+    local available_labels="$1"
+    local prefix="$2"
+    echo "$available_labels" | grep "^${prefix}" | sort
+}
+
+# Extract value from prefixed label (e.g., "Team : Platform" -> "Platform")
+extract_label_value() {
+    local label="$1"
+    local prefix="$2"
+    echo "$label" | sed "s/^${prefix} : //"
+}
+
+# Find label by prefix and value (e.g., find "Team : Platform" given prefix "Team" and value "Platform")
+find_label_by_prefix_value() {
+    local available_labels="$1"
+    local prefix="$2"
+    local value="$3"
+    echo "$available_labels" | grep "^${prefix} :" | grep "$value" | head -1
+}
+
+# Generic label selection function
+select_label_by_prefix() {
+    local available_labels="$1"
+    local prefix="$2"
+    local current_value="$3"
+    local step_name="$4"
+    local is_required="${5:-true}"
+    
+    # Get labels for this prefix
+    local prefix_labels=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && prefix_labels+=("$line")
+    done < <(get_labels_by_prefix "$available_labels" "$prefix")
+    
+    if [[ ${#prefix_labels[@]} -gt 0 ]]; then
+        local step_name_lower=$(echo "$step_name" | tr '[:upper:]' '[:lower:]')
+        
+        # Find current value if it matches
+        local current_default=""
+        for label in "${prefix_labels[@]}"; do
+            local label_value=$(extract_label_value "$label" "$prefix")
+            if [[ "$label_value" == "$current_value" ]]; then
+                current_default="$label"
+                break
+            fi
+        done
+        
+        # Check if fzf is available
+        if command -v fzf >/dev/null 2>&1; then
+            echo -e "${BLUE}Select ${step_name_lower} (search/filter available):${NC}" >&2
+            
+            # Prepare options for fzf - put default/skip options first
+            local fzf_input=""
+            local default_option=""
+            
+            # Add skip/default options at the top
+            if [[ -n "$current_default" ]]; then
+                default_option="[Keep current: $current_default]"
+                fzf_input+="$default_option"$'\n'
+            fi
+            if [[ "$is_required" == "false" ]]; then
+                if [[ -z "$default_option" ]]; then
+                    default_option="[Skip ${step_name_lower} selection]"
+                fi
+                fzf_input+="[Skip ${step_name_lower} selection]"$'\n'
+            fi
+            
+            # Add separator line if we have default/skip options
+            if [[ -n "$default_option" ]]; then
+                fzf_input+="────────────────────────────────────"$'\n'
+            fi
+            
+            # Add all label options
+            for label in "${prefix_labels[@]}"; do
+                fzf_input+="$label"$'\n'
+            done
+            
+            # Use fzf for selection with first option pre-selected
+            local selected_option
+            if [[ -n "$default_option" ]]; then
+                selected_option=$(echo -n "$fzf_input" | fzf --height=60% --reverse --prompt="Select ${step_name_lower}: " --header="Default option selected - press Enter to accept, or type to search" --select-1 --exit-0)
+            else
+                selected_option=$(echo -n "$fzf_input" | fzf --height=60% --reverse --prompt="Select ${step_name_lower}: " --header="Type to search, Enter to select")
+            fi
+            
+            if [[ -n "$selected_option" ]]; then
+                # Handle separator line selection (treat as no selection)
+                if [[ "$selected_option" == "────────────────────────────────────" ]]; then
+                    selected_option=""
+                fi
+                
+                if [[ "$selected_option" == "[Keep current: $current_default]" ]]; then
+                    local selected_value=$(extract_label_value "$current_default" "$prefix")
+                    echo "$selected_value|$current_default"
+                    return 0
+                elif [[ "$selected_option" == "[Skip ${step_name_lower} selection]" ]]; then
+                    echo "|"
+                    return 0
+                else
+                    # Regular label selected
+                    local selected_value=$(extract_label_value "$selected_option" "$prefix")
+                    echo "$selected_value|$selected_option"
+                    return 0
+                fi
+            else
+                # No selection made (ESC pressed)
+                if [[ -n "$current_default" ]]; then
+                    local selected_value=$(extract_label_value "$current_default" "$prefix")
+                    echo "$selected_value|$current_default"
+                    return 0
+                elif [[ "$is_required" == "false" ]]; then
+                    echo "|"
+                    return 0
+                fi
+            fi
+        else
+            # Fallback to numbered selection when fzf not available
+            echo -e "${BLUE}Available ${step_name_lower} labels:${NC}" >&2
+            for i in "${!prefix_labels[@]}"; do
+                echo "$((i+1)). ${prefix_labels[$i]}" >&2
+            done
+            
+            # Show additional options
+            local next_option=$((${#prefix_labels[@]}+1))
+            if [[ -n "$current_default" ]]; then
+                echo "$next_option. Keep current default ($current_default)" >&2
+                next_option=$((next_option+1))
+            fi
+            if [[ "$is_required" == "false" ]]; then
+                echo "$next_option. Skip ${step_name_lower} selection" >&2
+            fi
+            
+            echo "" >&2
+            echo -e "${BLUE}Select ${step_name_lower} (1-$next_option):${NC}" >&2
+            read -r choice
+            
+            if [[ "$choice" -ge 1 && "$choice" -le ${#prefix_labels[@]} ]]; then
+                local selected_label="${prefix_labels[$((choice-1))]}"
+                local selected_value=$(extract_label_value "$selected_label" "$prefix")
+                echo "$selected_value|$selected_label"
+                return 0
+            elif [[ -n "$current_default" && "$choice" -eq $((${#prefix_labels[@]}+1)) ]]; then
+                local selected_value=$(extract_label_value "$current_default" "$prefix")
+                echo "$selected_value|$current_default"
+                return 0
+            elif [[ "$is_required" == "false" && "$choice" -eq $next_option ]]; then
+                echo "|"
+                return 0
+            fi
+        fi
+    else
+        if [[ "$is_required" == "true" ]]; then
+            local step_name_lower=$(echo "$step_name" | tr '[:upper:]' '[:lower:]')
+            echo -e "${YELLOW}No ${step_name_lower} labels found in repository. Skipping ${step_name_lower} selection.${NC}" >&2
+        fi
+        echo "|"
+        return 1
+    fi
+}
+
+# Priority label function for consistent formatting  
+get_priority_label() {
+    # Return empty if priority is empty
+    [[ -z "$1" ]] && return 0
+    
+    # Simply return the priority value as-is since it should already be the exact label text
+    # from the repository (e.g., "Priority : 1 Critical" from the dynamic selection)
+    echo "$1"
+}
+
+
+# Reuse sanitize_title function from existing scripts
+sanitize_title() {
+    local title="$1"
+    # Convert to lowercase first
+    local sanitized=$(echo "$title" | tr '[:upper:]' '[:lower:]')
+    # Replace problematic characters with dashes, remove others
+    sanitized=$(echo "$sanitized" | sed -E 's/[[:space:]]+/-/g; s/[^a-z0-9-]//g; s/--+/-/g; s/^-|-$//g')
+    # Truncate to 50 characters, trying to split on word boundaries
+    if [ ${#sanitized} -gt 50 ]; then
+        sanitized=$(echo "$sanitized" | cut -c1-50 | sed -E 's/-[^-]*$//g')
+    fi
+    # Remove any trailing dash that might remain after truncation
+    sanitized=$(echo "$sanitized" | sed 's/-$//g')
+    echo "$sanitized"
+}
+
+# Parse command line arguments
+TITLE=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --team)
+            TEAM="$2"
+            CLI_TEAM_SET=true
+            shift 2
+            ;;
+        --type)
+            TYPE="$2"
+            CLI_TYPE_SET=true
+            shift 2
+            ;;
+        --priority)
+            PRIORITY="$2"
+            CLI_PRIORITY_SET=true
+            shift 2
+            ;;
+        --branch|-b)
+            CREATE_BRANCH=true
+            shift
+            ;;
+        --assignee)
+            ASSIGNEE="$2"
+            shift 2
+            ;;
+        --repo|-r)
+            REPOSITORY="$2"
+            shift 2
+            ;;
+        --project)
+            PROJECT_ID="$2"
+            shift 2
+            ;;
+        --refresh)
+            REFRESH_CACHE=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: git issue-create [title] [options]"
+            echo ""
+            echo "Options:"
+            echo "  --team TEAM        Set team (Platform, CloudEng, QA, Frontend, Backend)"
+            echo "  --type TYPE        Set issue type (Enhancement, Defect, Task)"
+            echo "  --priority PRIORITY Set priority (1 Critical, 2 High, 3 Medium, 4 Low)"
+            echo "  --branch, -b       Create and switch to branch after issue creation"
+            echo "  --assignee USER    Assign issue to user"
+            echo "  --repo, -r REPO    Repository to create issue in (owner/repo format)"
+            echo "  --project ID       Project ID to add issue to"
+            echo "  --refresh          Force refresh of cached labels and types"
+            echo "  --dry-run          Show what would be created without actually creating the issue"
+            echo "  --help, -h         Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  git issue-create \"Fix login bug\" --type Defect --priority \"2 High\""
+            echo "  git issue-create \"Add new feature\" --branch --team CloudEng"
+            echo "  git issue-create \"Update docs\" --repo dotCMS/core --team Platform"
+            exit 0
+            ;;
+        -*|--*)
+            echo "Unknown option $1"
+            exit 1
+            ;;
+        *)
+            if [[ -z "$TITLE" ]]; then
+                TITLE="$1"
+            else
+                echo "Multiple titles provided. Use quotes for titles with spaces."
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Load saved configuration
+load_config
+
+# Use saved defaults only for Team (and not overridden by command line)
+if [[ -n "$SAVED_TEAM" && "$CLI_TEAM_SET" != true ]]; then
+    TEAM="$SAVED_TEAM"
+fi
+
+# Start wizard if no title provided
+if [[ -z "$TITLE" ]]; then
+
+# Full wizard
+
+echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║        GitHub Issue Creator          ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
+echo ""
+
+# Initialize step counter
+CURRENT_STEP=1
+
+# Step 1: Issue Title
+echo -e "${YELLOW}Step $CURRENT_STEP: Issue Title${NC}"
+echo -e "${BLUE}Enter the issue title:${NC}"
+read -r TITLE
+
+if [[ -z "$TITLE" ]]; then
+    echo -e "${RED}Error: Issue title is required${NC}"
+    exit 1
+fi
+echo ""
+        
+    # Step 2: Repository Selection
+    ((CURRENT_STEP++))
+    echo -e "${YELLOW}Step $CURRENT_STEP: Repository Selection${NC}"
+    CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+    
+if [[ -n "$CURRENT_REPO" ]]; then
+    # Check if fzf is available for repository selection
+    if command -v fzf >/dev/null 2>&1; then
+        echo -e "${BLUE}Select repository (search/filter available):${NC}"
+        
+        # Prepare repository options for fzf
+        repo_options="Current repository: $CURRENT_REPO"$'\n'
+        repo_options+="dotCMS/core"$'\n'
+        repo_options+="dotCMS/dotcms-utilities"$'\n'
+        repo_options+="[Other - specify manually]"$'\n'
+        
+        # Use fzf for repository selection
+        selected_repo=$(echo -n "$repo_options" | fzf --height=60% --reverse --prompt="Select repository: " --header="Type to search, Enter to select")
+            
+        if [[ -n "$selected_repo" ]]; then
+            if [[ "$selected_repo" == "Current repository: $CURRENT_REPO" ]]; then
+                REPOSITORY="$CURRENT_REPO"
+            elif [[ "$selected_repo" == "dotCMS/core" ]]; then
+                REPOSITORY="dotCMS/core"
+            elif [[ "$selected_repo" == "dotCMS/dotcms-utilities" ]]; then
+                REPOSITORY="dotCMS/dotcms-utilities"
+            elif [[ "$selected_repo" == "[Other - specify manually]" ]]; then
+                echo -e "${BLUE}Enter repository (owner/repo format):${NC}"
+                read -r REPOSITORY
+            fi
+        else
+            # No selection made, use current repo as default
+            REPOSITORY="$CURRENT_REPO"
+        fi
+    else
+        # Fallback to numbered selection when fzf not available
+        echo -e "${BLUE}Available repositories:${NC}"
+        echo "1. Current repository: $CURRENT_REPO"
+        echo "2. dotCMS/core"
+        echo "3. dotCMS/dotcms-utilities"
+        echo "4. Other (specify)"
+        echo ""
+        echo -e "${BLUE}Select repository (1-4, default: 1):${NC}"
+        read -r REPO_CHOICE
+            
+            case $REPO_CHOICE in
+                2)
+                    REPOSITORY="dotCMS/core"
+                    ;;
+                3)
+                    REPOSITORY="dotCMS/dotcms-utilities"
+                    ;;
+                4)
+                    echo -e "${BLUE}Enter repository (owner/repo format):${NC}"
+                    read -r REPOSITORY
+                    ;;
+                *)
+                    REPOSITORY="$CURRENT_REPO"
+                    ;;
+            esac
+    fi
+else
+    echo -e "${BLUE}Enter repository (owner/repo format):${NC}"
+    read -r REPOSITORY
+fi
+echo ""
+
+# Team Selection (Dynamic - only if team labels exist)
+echo -e "${BLUE}Fetching repository labels...${NC}"
+AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+
+# Check if team labels exist
+team_result=$(select_label_by_prefix "$AVAILABLE_LABELS" "Team" "$TEAM" "Team" "true") || true
+IFS='|' read -r TEAM SELECTED_TEAM_LABEL <<< "$team_result"
+
+if [[ -n "$SELECTED_TEAM_LABEL" ]]; then
+    ((CURRENT_STEP++))
+    echo -e "${YELLOW}Step $CURRENT_STEP: Team Selection${NC}"
+    echo -e "${GREEN}✓ Team: $SELECTED_TEAM_LABEL${NC}"
+    echo ""
+fi
+    
+# Issue Type (Organization-configured)
+((CURRENT_STEP++))
+echo -e "${YELLOW}Step $CURRENT_STEP: Issue Type${NC}"
+
+# Extract organization from repository
+ORG_NAME=$(echo "$REPOSITORY" | cut -d'/' -f1)
+
+# Get organization's configured issue types - compatible with bash 3.x
+ISSUE_TYPES=()
+while IFS= read -r line; do
+    [[ -n "$line" ]] && ISSUE_TYPES+=("$line")
+done < <(get_org_issue_types "$ORG_NAME")
+    
+if [[ ${#ISSUE_TYPES[@]} -gt 0 ]]; then
+    # Get type info for display
+    TYPE_INFO=$(get_issue_type_info "$ORG_NAME")
+    
+    # Check if fzf is available
+    if command -v fzf >/dev/null 2>&1; then
+        echo -e "${BLUE}Select issue type (search/filter available):${NC}"
+        
+        # Prepare options for fzf with descriptions
+        fzf_input=""
+        for type_name in "${ISSUE_TYPES[@]}"; do
+            type_desc=$(echo "$TYPE_INFO" | grep "^$type_name:" | cut -d':' -f2- | sed 's/^ //')
+            if [[ -n "$type_desc" ]]; then
+                fzf_input+="$type_name - $type_desc"$'\n'
+            else
+                fzf_input+="$type_name"$'\n'
+            fi
+        done
+        
+        # Use fzf for selection
+        selected_type_line=""
+        selected_type_line=$(echo -n "$fzf_input" | fzf --height=60% --reverse --prompt="Select issue type: " --header="Type to search, Enter to select")
+        
+        if [[ -n "$selected_type_line" ]]; then
+            # Extract just the type name (before the " - " description)
+            TYPE=$(echo "$selected_type_line" | cut -d' ' -f1)
+            echo -e "${GREEN}✓ Issue type: $TYPE${NC}"
+        else
+            # No selection made, use default
+            TYPE="Bug"
+            echo -e "${YELLOW}No selection made. Using default: $TYPE${NC}"
+        fi
+    else
+        # Fallback to numbered selection when fzf not available
+        echo -e "${BLUE}Available issue types for $ORG_NAME organization:${NC}"
+        
+        for i in "${!ISSUE_TYPES[@]}"; do
+            type_name="${ISSUE_TYPES[$i]}"
+            type_desc=$(echo "$TYPE_INFO" | grep "^$type_name:" | cut -d':' -f2- | sed 's/^ //')
+            echo "$((i+1)). $type_name${type_desc:+ - $type_desc}"
+        done
+        echo ""
+        echo -e "${BLUE}Select issue type (1-${#ISSUE_TYPES[@]}):${NC}"
+        
+        read -r TYPE_CHOICE
+        
+        if [[ "$TYPE_CHOICE" -ge 1 && "$TYPE_CHOICE" -le ${#ISSUE_TYPES[@]} ]]; then
+            TYPE="${ISSUE_TYPES[$((TYPE_CHOICE-1))]}"
+            echo -e "${GREEN}✓ Issue type: $TYPE${NC}"
+        else
+            echo -e "${RED}Invalid selection. Using default: Bug${NC}"
+            TYPE="Bug"
+        fi
+    fi
+else
+    echo -e "${YELLOW}Could not fetch organization issue types. Using standard types.${NC}"
+    echo -e "${BLUE}Available issue types:${NC}"
+    echo "1. Bug"
+    echo "2. Epic"
+    echo "3. Feature"
+    echo "4. Spike"
+    echo "5. Task"
+    echo ""
+    echo -e "${BLUE}Select type (1-5):${NC}"
+    read -r TYPE_CHOICE
+        
+    case $TYPE_CHOICE in
+        1) TYPE="Bug" ;;
+        2) TYPE="Epic" ;;
+        3) TYPE="Feature" ;;
+        4) TYPE="Spike" ;;
+        5) TYPE="Task" ;;
+        *) TYPE="Bug" ;;
+    esac
+    echo -e "${GREEN}✓ Issue type: $TYPE${NC}"
+fi
+    
+echo -e "${BLUE}📝 Note: Issue type is for project organization (separate from repository labels)${NC}"
+echo ""
+
+# Priority Selection (Dynamic - only if priority labels exist)
+priority_result=$(select_label_by_prefix "$AVAILABLE_LABELS" "Priority" "$PRIORITY" "Priority" "false") || true
+IFS='|' read -r PRIORITY SELECTED_PRIORITY_LABEL <<< "$priority_result"
+
+if [[ -n "$SELECTED_PRIORITY_LABEL" ]]; then
+    ((CURRENT_STEP++))
+    echo -e "${YELLOW}Step $CURRENT_STEP: Priority Selection${NC}"
+    echo -e "${GREEN}✓ Priority: $SELECTED_PRIORITY_LABEL${NC}"
+    echo ""
+elif [[ -n "$PRIORITY" ]]; then
+    # Clear priority if no labels available
+    PRIORITY=""
+fi
+    
+# dotCMS Core Area Selection (Optional - only if dotCMS labels exist)
+dotcms_result=$(select_label_by_prefix "$AVAILABLE_LABELS" "dotCMS" "" "dotCMS Core Area" "false") || true
+IFS='|' read -r DOTCMS_AREA SELECTED_DOTCMS_LABEL <<< "$dotcms_result"
+
+if [[ -n "$SELECTED_DOTCMS_LABEL" ]]; then
+    ((CURRENT_STEP++))
+    echo -e "${YELLOW}Step $CURRENT_STEP: dotCMS Core Area Selection${NC}"
+    echo -e "${GREEN}✓ dotCMS Core Area: $SELECTED_DOTCMS_LABEL${NC}"
+    echo ""
+fi
+    
+# OKR Goal Selection (Optional - only if OKR labels exist)
+okr_result=$(select_label_by_prefix "$AVAILABLE_LABELS" "OKR" "" "OKR Goal" "false") || true
+IFS='|' read -r OKR_GOAL SELECTED_OKR_LABEL <<< "$okr_result"
+
+if [[ -n "$SELECTED_OKR_LABEL" ]]; then
+    ((CURRENT_STEP++))
+    echo -e "${YELLOW}Step $CURRENT_STEP: OKR Goal Selection${NC}"
+    echo -e "${GREEN}✓ OKR Goal: $SELECTED_OKR_LABEL${NC}"
+    echo ""
+fi
+    
+# Project Selection (Automatic)
+((CURRENT_STEP++))
+echo -e "${YELLOW}Step $CURRENT_STEP: Project Selection${NC}"
+PROJECT_ID="7"
+
+# Get effort estimation in story points
+echo -e "${BLUE}Story Points Estimation:${NC}"
+echo -e "${BLUE}Enter number directly (Fibonacci recommended: 1, 2, 3, 5, 8, 13)${NC}"
+echo -e "${BLUE}or press Enter to skip estimation:${NC}"
+read -r PROJECT_EFFORT
+
+# Validate numeric input
+if [[ -n "$PROJECT_EFFORT" && ! "$PROJECT_EFFORT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo -e "${YELLOW}⚠ Invalid input, skipping estimation${NC}"
+    PROJECT_EFFORT=""
+fi
+
+if [[ -n "$PROJECT_EFFORT" ]]; then
+    echo -e "${GREEN}✓ Will set story points to: $PROJECT_EFFORT${NC}"
+fi
+
+echo -e "${GREEN}✓ Will add to Product Planning project with 'New' status${NC}"
+echo ""
+    
+# Label Summary
+((CURRENT_STEP++))
+echo -e "${YELLOW}Step $CURRENT_STEP: Label Summary${NC}"
+
+# Collect all selected labels
+LABELS=()
+
+# Add selected team label
+if [[ -n "$SELECTED_TEAM_LABEL" ]]; then
+    LABELS+=("$SELECTED_TEAM_LABEL")
+    echo -e "${GREEN}✓ Will apply team label: $SELECTED_TEAM_LABEL${NC}"
+fi
+
+# Add selected priority label
+if [[ -n "$SELECTED_PRIORITY_LABEL" ]]; then
+    LABELS+=("$SELECTED_PRIORITY_LABEL")
+    echo -e "${GREEN}✓ Will apply priority label: $SELECTED_PRIORITY_LABEL${NC}"
+fi
+
+# Add selected dotCMS core area label
+if [[ -n "$SELECTED_DOTCMS_LABEL" ]]; then
+    LABELS+=("$SELECTED_DOTCMS_LABEL")
+    echo -e "${GREEN}✓ Will apply dotCMS area label: $SELECTED_DOTCMS_LABEL${NC}"
+fi
+
+# Add selected OKR goal label
+if [[ -n "$SELECTED_OKR_LABEL" ]]; then
+    LABELS+=("$SELECTED_OKR_LABEL")
+    echo -e "${GREEN}✓ Will apply OKR label: $SELECTED_OKR_LABEL${NC}"
+fi
+
+# Get optional labels (exclude the structured ones we already handle)
+if [[ -n "$AVAILABLE_LABELS" ]]; then
+    # Filter out structured labels and automated/system labels to show only relevant optional ones
+    OPTIONAL_LABELS=$(echo "$AVAILABLE_LABELS" | \
+        grep -v "^Team :" | \
+        grep -v "^Priority :" | \
+        grep -v "^dotCMS :" | \
+        grep -v "^OKR :" | \
+        grep -v "^Type :" | \
+        grep -v "^Release :" | \
+        grep -v "^Doc :" | \
+        grep -v "^QA :" | \
+        grep -v '^[[:space:]]*$' | \
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
+        grep -v '^$' | \
+        sort)
+    
+    if [[ -n "$OPTIONAL_LABELS" ]]; then
+        ((CURRENT_STEP++))
+        echo -e "${YELLOW}Step $CURRENT_STEP: Additional Optional Labels${NC}"
+        
+        # Check if fzf is available for better UX
+        if command -v fzf >/dev/null 2>&1; then
+            echo -e "${BLUE}Select additional optional labels (search/filter available):${NC}"
+            
+            # Clean up optional labels - completely rebuild the string to eliminate any hidden characters
+            CLEANED_OPTIONAL_LABELS=""
+            while IFS= read -r line; do
+                # Trim whitespace and only add non-empty lines
+                trimmed_line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if [[ -n "$trimmed_line" ]]; then
+                    if [[ -n "$CLEANED_OPTIONAL_LABELS" ]]; then
+                        CLEANED_OPTIONAL_LABELS+=$'\n'
+                    fi
+                    CLEANED_OPTIONAL_LABELS+="$trimmed_line"
+                fi
+            done <<< "$OPTIONAL_LABELS"
+            
+            if [[ -n "$CLEANED_OPTIONAL_LABELS" ]]; then
+                # Prepare options for fzf with [None] as default
+                fzf_input="[None - skip optional labels]"$'\n'
+                fzf_input+="────────────────────────────────────"$'\n'
+                fzf_input+="$CLEANED_OPTIONAL_LABELS"
+                
+                SELECTED_OPTIONAL=$(echo "$fzf_input" | fzf --multi --height=60% --reverse --prompt="Select optional labels: " --header="[None] selected by default - Tab to select multiple, Enter to confirm")
+                
+                # Add selected labels to LABELS array (skip [None] and separator)
+                if [[ -n "$SELECTED_OPTIONAL" ]]; then
+                    while IFS= read -r label; do
+                        if [[ -n "$label" && "$label" != "[None - skip optional labels]" && "$label" != "────────────────────────────────────" ]]; then
+                            LABELS+=("$label")
+                        fi
+                    done <<< "$SELECTED_OPTIONAL"
+                fi
+            else
+                echo -e "${YELLOW}No optional labels available after filtering${NC}"
+            fi
+        else
+            # Fallback: numbered list with multi-select
+            # Convert to array for easier handling
+            OPTIONAL_ARRAY=()
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && OPTIONAL_ARRAY+=("$line")
+            done <<< "$OPTIONAL_LABELS"
+            
+            echo -e "${BLUE}Available optional labels:${NC}"
+            echo "0. [None - skip optional labels]"
+            for i in "${!OPTIONAL_ARRAY[@]}"; do
+                echo "$((i+1)). ${OPTIONAL_ARRAY[$i]}"
+            done
+            echo ""
+            echo -e "${BLUE}Enter label numbers (comma-separated, or press Enter for none):${NC}"
+            echo -e "${BLUE}Example: 1,3,7 to select labels 1, 3, and 7${NC}"
+            read -r SELECTED_LABELS
+            
+            if [[ -n "$SELECTED_LABELS" ]]; then
+                IFS=',' read -ra LABEL_NUMS <<< "$SELECTED_LABELS"
+                for num in "${LABEL_NUMS[@]}"; do
+                    num=$(echo "$num" | tr -d '[:space:]')
+                    if [[ "$num" =~ ^[0-9]+$ ]] && [[ "$num" -ge 1 ]] && [[ "$num" -le ${#OPTIONAL_ARRAY[@]} ]]; then
+                        LABELS+=("${OPTIONAL_ARRAY[$((num-1))]}")
+                    fi
+                done
+            fi
+        fi
+        echo ""
+    else
+        echo -e "${BLUE}No optional labels available in this repository${NC}"
+    fi
+    
+    echo ""
+    if [[ ${#LABELS[@]} -gt 0 ]]; then
+        echo -e "${GREEN}Labels to apply:${NC}"
+        for label in "${LABELS[@]}"; do
+            echo -e "  • ${GREEN}$label${NC}"
+        done
+    else
+        echo -e "${YELLOW}No labels will be applied${NC}"
+    fi
+else
+    echo -e "${YELLOW}Could not fetch labels from repository${NC}"
+fi
+echo ""
+    
+# Options & Save Defaults
+((CURRENT_STEP++))
+echo -e "${YELLOW}Step $CURRENT_STEP: Additional Options${NC}"
+
+# Check if we can create a branch
+IS_CURRENT_REPO=false
+if [[ "$REPOSITORY" == "$CURRENT_REPO" ]]; then
+    IS_CURRENT_REPO=true
+fi
+
+if [[ "$IS_CURRENT_REPO" == true ]]; then
+    echo -e "${BLUE}Create and switch to branch after issue creation? (y/N):${NC}"
+    read -r CREATE_BRANCH_INPUT
+    if [[ "$CREATE_BRANCH_INPUT" =~ ^[Yy]$ ]]; then
+        CREATE_BRANCH=true
+        
+        # Ask what type of branch to create
+        echo -e "${BLUE}Choose branch type:${NC}"
+        echo -e "${BLUE}  1. Clean branch from origin/main (default)${NC}"
+        echo -e "${BLUE}  2. Copy of current branch and state${NC}"
+        echo ""
+        echo -e "${BLUE}💡 Note: Your current branch and working files will be preserved.${NC}"
+        echo -e "${BLUE}   You can return to them anytime with: git smart-switch${NC}"
+        echo ""
+        echo -e "${BLUE}Select option (1-2, default: 1):${NC}"
+        read -r BRANCH_TYPE_CHOICE
+        
+        case "$BRANCH_TYPE_CHOICE" in
+            2)
+                CREATE_BRANCH_KEEP_STATE=true
+                ;;
+            *)
+                CREATE_BRANCH_KEEP_STATE=false
+                ;;
+        esac
+    fi
+else
+    echo -e "${YELLOW}Note: Branch creation not available (issue in different repository)${NC}"
+fi
+
+# Get current GitHub username for assignment
+CURRENT_USER=$(gh api user --jq '.login' 2>/dev/null || echo "")
+
+if [[ -n "$CURRENT_USER" ]]; then
+    echo -e "${BLUE}Assign issue? (y/N/other):${NC}"
+    echo -e "${BLUE}  y = assign to yourself (@$CURRENT_USER)${NC}"
+    echo -e "${BLUE}  N = no assignment (default)${NC}" 
+    echo -e "${BLUE}  other = type different username${NC}"
+    read -r ASSIGN_CHOICE
+    
+    case "$ASSIGN_CHOICE" in
+        [Yy])
+            ASSIGNEE="$CURRENT_USER"
+            ;;
+        [Oo]|[Oo][Tt][Hh][Ee][Rr])
+            echo -e "${BLUE}Enter GitHub username:${NC}"
+            read -r ASSIGNEE
+            ;;
+        *)
+            # Default to no assignment (N or Enter)
+            ASSIGNEE=""
+            ;;
+    esac
+else
+    echo -e "${BLUE}Assign to someone? (leave empty to skip):${NC}"
+    read -r ASSIGNEE
+fi
+
+echo -e "${BLUE}Brief description (optional, press Enter to skip):${NC}"
+read -r DESCRIPTION
+
+# Automatically save team selection as default (only team, not type/priority/project)
+save_config "$TEAM" "$TYPE" "$PRIORITY" "$PROJECT_ID"
+echo -e "${GREEN}✓ Team preference saved${NC}"
+
+echo ""
+echo -e "${GREEN}✓ Wizard complete! Creating issue...${NC}"
+echo ""
+
+else
+# Get title if not provided via arguments
+if [[ -z "$TITLE" ]]; then
+    echo -e "${BLUE}Enter issue title:${NC}"
+    read -r TITLE
+fi
+
+    if [[ -z "$TITLE" ]]; then
+        echo -e "${RED}Error: Issue title is required${NC}"
+        exit 1
+    fi
+fi
+
+# Get repository if not specified (non-wizard mode)
+if [[ -z "$REPOSITORY" ]]; then
+    # Get current repository
+    CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+    
+    if [[ -n "$CURRENT_REPO" ]]; then
+        echo -e "${BLUE}Repository options:${NC}"
+        echo "1. Current repository: $CURRENT_REPO"
+        echo "2. dotCMS/core"
+        echo "3. dotCMS/dotcms-utilities"
+        echo "4. Other (specify)"
+        echo ""
+        echo -e "${BLUE}Select repository (1-4, default: 1):${NC}"
+        read -r REPO_CHOICE
+        
+        case $REPO_CHOICE in
+            2)
+                REPOSITORY="dotCMS/core"
+                ;;
+            3)
+                REPOSITORY="dotCMS/dotcms-utilities"
+                ;;
+            4)
+                echo -e "${BLUE}Enter repository (owner/repo format):${NC}"
+                read -r REPOSITORY
+                ;;
+            *)
+                REPOSITORY="$CURRENT_REPO"
+                ;;
+        esac
+    else
+        echo -e "${BLUE}Enter repository (owner/repo format):${NC}"
+        read -r REPOSITORY
+    fi
+    
+    # Check if repository is the current one for branch creation logic
+    IS_CURRENT_REPO=false
+    if [[ "$REPOSITORY" == "$CURRENT_REPO" ]]; then
+        IS_CURRENT_REPO=true
+    fi
+    
+    # Get brief description (optional) for non-wizard mode
+    echo -e "${BLUE}Enter brief description (optional, press Enter to skip):${NC}"
+    read -r DESCRIPTION
+    
+    # Auto-apply team label only in non-wizard mode
+    echo -e "${BLUE}Fetching repository labels...${NC}"
+    AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+    LABELS=()
+    
+    if [[ -n "$AVAILABLE_LABELS" ]]; then
+        # Auto-apply team label using generic function
+        team_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Team" "$TEAM")
+        if [[ -n "$team_label" ]]; then
+            LABELS+=("$team_label")
+        fi
+        
+        # Auto-apply priority label using generic function
+        if [[ -n "$PRIORITY" ]]; then
+            priority_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Priority" "$PRIORITY")
+            if [[ -n "$priority_label" ]]; then
+                LABELS+=("$priority_label")
+            fi
+        fi
+    fi
+fi
+
+# Validate repository format
+if [[ ! "$REPOSITORY" =~ ^[^/]+/[^/]+$ ]]; then
+    echo -e "${RED}Error: Repository must be in 'owner/repo' format${NC}"
+    exit 1
+fi
+
+# Validate specified team, priority, and type exist in repository
+if [[ "$CLI_TEAM_SET" == true || "$CLI_PRIORITY_SET" == true || "$CLI_TYPE_SET" == true ]]; then
+    echo -e "${BLUE}Validating specified parameters...${NC}"
+    
+    # Get available labels for team/priority validation (reuse if already fetched)
+    if [[ "$CLI_TEAM_SET" == true || "$CLI_PRIORITY_SET" == true ]]; then
+        if [[ -z "$AVAILABLE_LABELS" ]]; then
+            AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+        fi
+        
+        if [[ -z "$AVAILABLE_LABELS" ]]; then
+            echo -e "${YELLOW}Warning: Could not fetch labels from repository${NC}"
+        else
+            # Validate team label if specified via CLI
+            if [[ "$CLI_TEAM_SET" == true ]]; then
+                team_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Team" "$TEAM")
+                if [[ -z "$team_label" ]]; then
+                    echo -e "${RED}Error: Team label not found in repository${NC}"
+                    echo -e "${RED}Specified: --team \"$TEAM\"${NC}"
+                    echo -e "${BLUE}Available team labels in $REPOSITORY:${NC}"
+                    echo "$AVAILABLE_LABELS" | grep "^Team :" | sed 's/^/  - /'
+                    if [[ $(echo "$AVAILABLE_LABELS" | grep "^Team :" | wc -l) -eq 0 ]]; then
+                        echo -e "${YELLOW}  (No team labels found in this repository)${NC}"
+                    fi
+                    exit 1
+                fi
+            fi
+            
+            # Validate priority label if specified via CLI
+            if [[ "$CLI_PRIORITY_SET" == true ]]; then
+                priority_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Priority" "$PRIORITY")
+                if [[ -z "$priority_label" ]]; then
+                    echo -e "${RED}Error: Priority label not found in repository${NC}"
+                    echo -e "${RED}Specified: --priority \"$PRIORITY\"${NC}"
+                    echo -e "${BLUE}Available priority labels in $REPOSITORY:${NC}"
+                    echo "$AVAILABLE_LABELS" | grep "^Priority :" | sed 's/^/  - /'
+                    if [[ $(echo "$AVAILABLE_LABELS" | grep "^Priority :" | wc -l) -eq 0 ]]; then
+                        echo -e "${YELLOW}  (No priority labels found in this repository)${NC}"
+                    fi
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+    
+    # Validate issue type if specified via CLI
+    if [[ "$CLI_TYPE_SET" == true ]]; then
+        ORG_NAME=$(echo "$REPOSITORY" | cut -d'/' -f1)
+        AVAILABLE_TYPES=$(get_org_issue_types "$ORG_NAME")
+        
+        if [[ -z "$AVAILABLE_TYPES" ]]; then
+            echo -e "${YELLOW}Warning: Could not fetch issue types from organization${NC}"
+        else
+            type_found=false
+            while IFS= read -r available_type; do
+                if [[ "$available_type" == "$TYPE" ]]; then
+                    type_found=true
+                    break
+                fi
+            done <<< "$AVAILABLE_TYPES"
+            
+            if [[ "$type_found" != true ]]; then
+                echo -e "${RED}Error: Issue type not found in organization${NC}"
+                echo -e "${RED}Specified: --type \"$TYPE\"${NC}"
+                echo -e "${BLUE}Available issue types in $ORG_NAME organization:${NC}"
+                echo "$AVAILABLE_TYPES" | sed 's/^/  - /'
+                if [[ $(echo "$AVAILABLE_TYPES" | wc -l) -eq 0 ]]; then
+                    echo -e "${YELLOW}  (No custom issue types found in this organization)${NC}"
+                fi
+                exit 1
+            fi
+        fi
+    fi
+    
+    echo -e "${GREEN}✓ Specified parameters validated${NC}"
+fi
+
+# Apply validated labels for non-wizard mode (only if LABELS array is empty)
+if [[ ${#LABELS[@]} -eq 0 ]]; then
+    if [[ -z "$AVAILABLE_LABELS" ]]; then
+        AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+    fi
+
+    if [[ -n "$AVAILABLE_LABELS" ]]; then
+        # Apply team label if specified or from default
+        if [[ -n "$TEAM" ]]; then
+            team_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Team" "$TEAM")
+            if [[ -n "$team_label" ]]; then
+                LABELS+=("$team_label")
+            fi
+        fi
+        
+        # Apply priority label if specified
+        if [[ -n "$PRIORITY" ]]; then
+            priority_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Priority" "$PRIORITY")
+            if [[ -n "$priority_label" ]]; then
+                LABELS+=("$priority_label")
+            fi
+        fi
+    fi
+fi
+
+# Create the issue body
+BODY="$DESCRIPTION"
+if [[ -z "$BODY" ]]; then
+    BODY="## Description
+
+[Brief description of the issue]
+
+## Acceptance Criteria
+
+- [ ] [Define what needs to be accomplished]
+
+## Additional Notes
+
+[Any additional context or notes]"
+fi
+
+# Build gh command with repository
+GH_CMD="gh issue create --repo \"$REPOSITORY\" --title \"$TITLE\" --body \"$BODY\""
+
+# Add labels
+if [[ ${#LABELS[@]} -gt 0 ]]; then
+    LABEL_STRING=$(IFS=,; echo "${LABELS[*]}")
+    GH_CMD+=" --label \"$LABEL_STRING\""
+fi
+
+# Add assignee
+if [[ -n "$ASSIGNEE" ]]; then
+    GH_CMD+=" --assignee \"$ASSIGNEE\""
+fi
+
+echo -e "${YELLOW}Creating issue with:${NC}"
+echo -e "  Repository: ${GREEN}$REPOSITORY${NC}"
+echo -e "  Title: ${GREEN}$TITLE${NC}"
+echo -e "  Team: ${GREEN}$TEAM${NC}"
+echo -e "  Type: ${GREEN}$TYPE${NC}"
+echo -e "  Priority: ${GREEN}$PRIORITY${NC}"
+if [[ ${#LABELS[@]} -gt 0 ]]; then
+    echo -e "  Labels:"
+    for label in "${LABELS[@]}"; do
+        echo -e "    • ${GREEN}$label${NC}"
+    done
+fi
+if [[ -n "$ASSIGNEE" ]]; then
+    echo -e "  Assignee: ${GREEN}$ASSIGNEE${NC}"
+fi
+
+# Dry run mode - show what would be created and exit
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo ""
+    echo -e "${YELLOW}[DRY RUN] Issue creation preview:${NC}"
+    echo -e "${YELLOW}==================================${NC}"
+    echo -e "Repository: ${GREEN}$REPOSITORY${NC}"
+    echo -e "Title: ${GREEN}$TITLE${NC}"
+    echo -e "Body: ${GREEN}$BODY${NC}"
+    echo -e "Type: ${GREEN}$TYPE${NC}"
+    echo -e "Team: ${GREEN}$TEAM${NC}"
+    echo -e "Priority: ${GREEN}$PRIORITY${NC}"
+    
+    # Show effective labels that would be applied
+    echo ""
+    echo -e "${BLUE}Effective labels that would be applied:${NC}"
+    if [[ ${#LABELS[@]} -gt 0 ]]; then
+        for label in "${LABELS[@]}"; do
+            echo -e "  • ${GREEN}$label${NC}"
+        done
+    else
+        echo -e "  ${YELLOW}No labels would be applied${NC}"
+    fi
+    
+    if [[ -n "$ASSIGNEE" ]]; then
+        echo -e "Assignee: ${GREEN}$ASSIGNEE${NC}"
+    fi
+    
+    if [[ "$PROJECT_ID" == "7" ]]; then
+        echo -e "Project: ${GREEN}dotCMS - Product Planning V2${NC}"
+        echo -e "Status: ${GREEN}$PROJECT_STATUS${NC}"
+        if [[ -n "$PROJECT_EFFORT" ]]; then
+            echo -e "Effort: ${GREEN}$PROJECT_EFFORT${NC}"
+        fi
+    fi
+    
+    if [[ "$CREATE_BRANCH" == "true" ]]; then
+        echo -e "Would create branch: ${GREEN}$(sanitize_title "$TITLE")${NC}"
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}[DRY RUN] No issue was actually created${NC}"
+    exit 0
+fi
+
+echo ""
+echo -e "${BLUE}Confirm creation? (y/N):${NC}"
+read -r CONFIRM
+
+if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Creating issue with type '$TYPE'...${NC}"
+    
+    # Prepare labels string
+    LABEL_STRING=""
+    if [[ ${#LABELS[@]} -gt 0 ]]; then
+        LABEL_STRING=$(IFS=,; echo "${LABELS[*]}")
+    fi
+    
+    # Create issue with type using our enhanced function
+    ISSUE_OUTPUT=$(create_issue_with_type "$REPOSITORY" "$TITLE" "$BODY" "$TYPE" "$LABEL_STRING" "$ASSIGNEE")
+    ISSUE_URL=$(echo "$ISSUE_OUTPUT" | grep -o 'https://github.com/[^[:space:]]*')
+    ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
+    
+    echo -e "${GREEN}✓ Issue created successfully!${NC}"
+    echo -e "  Issue #${ISSUE_NUMBER}: $ISSUE_URL"
+    echo -e "  Issue Type: ${GREEN}$TYPE${NC}"
+    
+    # Add to project if specified  
+    if [[ "$PROJECT_ID" == "7" ]]; then
+        echo -e "${BLUE}📋 Adding to dotCMS - Product Planning V2 project...${NC}"
+        
+        # Get project node ID and issue node ID for GraphQL
+        project_node_id=$(get_project_node_id "dotCMS" "$PROJECT_ID")
+        issue_node_id=$(get_issue_node_id "$REPOSITORY" "$ISSUE_NUMBER")
+        
+        if [[ -n "$project_node_id" && -n "$issue_node_id" ]]; then
+            # Add issue to project using GraphQL
+            project_item_id=$(add_issue_to_project_v2 "$project_node_id" "$issue_node_id")
+            if [[ -n "$project_item_id" ]]; then
+                echo -e "  ${GREEN}✓ Added to project successfully${NC}"
+                echo -e "  ${GREEN}✓ Issue will appear with default 'New' status${NC}"
+                
+                # Set effort estimation if provided
+                if [[ -n "$PROJECT_EFFORT" ]]; then
+                    echo -e "  ${BLUE}Setting story points to $PROJECT_EFFORT...${NC}"
+                    
+                    # Get field ID for "Estimated Effort" numeric field
+                    effort_field_id=$(get_project_effort_field_id "$project_node_id")
+                    
+                    if [[ -n "$effort_field_id" ]]; then
+                        if update_project_item_numeric_field "$project_node_id" "$project_item_id" "$effort_field_id" "$PROJECT_EFFORT"; then
+                            echo -e "  ${GREEN}✓ Story points set to $PROJECT_EFFORT${NC}"
+                        else
+                            echo -e "  ${YELLOW}⚠ Could not set story points automatically${NC}"
+                        fi
+                    else
+                        echo -e "  ${YELLOW}⚠ Could not find 'Estimated Effort' field${NC}"
+                        echo -e "  ${BLUE}💡 Set manually in project: https://github.com/orgs/dotCMS/projects/7${NC}"
+                    fi
+                fi
+                
+                echo -e "  ${BLUE}💡 Project: https://github.com/orgs/dotCMS/projects/7${NC}"
+            else
+                echo -e "  ${YELLOW}⚠ Could not add to project automatically${NC}"
+                echo -e "  ${BLUE}💡 This usually means insufficient permissions${NC}"
+                echo -e "  ${BLUE}💡 Run: gh auth refresh -s project${NC}"
+                echo -e "  ${BLUE}💡 Or manually add: https://github.com/orgs/dotCMS/projects/7${NC}"
+            fi
+        else
+            echo -e "  ${YELLOW}⚠ Could not get project/issue IDs${NC}"
+            echo -e "  ${BLUE}💡 Manually add issue to project: https://github.com/orgs/dotCMS/projects/7${NC}"
+            echo -e "  ${BLUE}💡 Set status to 'New' in the project board${NC}"
+        fi
+    fi
+    
+    # Create branch if requested and issue is in current repository
+    if [[ "$CREATE_BRANCH" == true ]]; then
+        if [[ "$IS_CURRENT_REPO" == true ]]; then
+            # Create branch name from issue number and title
+            SANITIZED_TITLE=$(sanitize_title "$TITLE")
+            BRANCH_NAME="issue-${ISSUE_NUMBER}-${SANITIZED_TITLE}"
+            
+            if [[ "$CREATE_BRANCH_KEEP_STATE" == true ]]; then
+                echo -e "${YELLOW}Creating branch as copy of current state: ${BRANCH_NAME}${NC}"
+                
+                # Use git smart-switch with --keep flag to preserve current state
+                if command -v git-smart-switch >/dev/null 2>&1; then
+                    git smart-switch "$BRANCH_NAME" --keep
+                else
+                    # Fallback: create branch from current state
+                    git checkout -b "$BRANCH_NAME"
+                fi
+                
+                # Link the branch to the issue after creation
+                gh issue develop "$ISSUE_NUMBER" --repo "$REPOSITORY" --name "$BRANCH_NAME" || true
+            else
+                echo -e "${YELLOW}Creating clean branch from origin/main: ${BRANCH_NAME}${NC}"
+                
+                # Fetch updates from upstream
+                echo "Fetching updates from remote..."
+                git fetch
+                
+                # Use gh issue develop to link the branch to the issue
+                gh issue develop "$ISSUE_NUMBER" --repo "$REPOSITORY" --name "$BRANCH_NAME"
+                
+                # Use git smart-switch if available, otherwise regular checkout
+                if command -v git-smart-switch >/dev/null 2>&1; then
+                    git smart-switch "$BRANCH_NAME"
+                else
+                    git checkout "$BRANCH_NAME"
+                fi
+            fi
+            
+            echo -e "${GREEN}✓ Created and switched to branch: ${BRANCH_NAME}${NC}"
+            echo -e "${BLUE}You can now start working on issue #${ISSUE_NUMBER}${NC}"
+            if command -v git-smart-switch >/dev/null 2>&1; then
+                echo -e "${BLUE}💡 To return to your previous branch: git smart-switch${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠ Branch creation skipped - issue created in different repository${NC}"
+            echo -e "${BLUE}Use 'git issue-branch' in the target repository to create a branch${NC}"
+        fi
+    fi
+    
+    # Copy issue URL to clipboard if pbcopy is available (macOS)
+    if command -v pbcopy &> /dev/null; then
+        echo "$ISSUE_URL" | pbcopy
+        echo -e "${GREEN}✓ Issue URL copied to clipboard${NC}"
+    fi
+    
+else
+    echo -e "${YELLOW}Issue creation cancelled${NC}"
+    exit 1
+fi

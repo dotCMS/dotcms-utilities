@@ -1,22 +1,89 @@
 #!/bin/bash
+
+# git-smart-switch - Enhanced branch switching with WIP management and commit movement
+# Usage: git smart-switch [<target-branch>] [OPTIONS]
+
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
 
 # Call the check_updates.sh script from the determined directory
 "$script_dir/check_updates.sh"
-# Enhance the usage of the script
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Enhanced usage function  
 usage() {
-    echo "Usage: $0 [<new-branch-name>] [-p|--push]"
-    echo "  -p, --push    Push the new branch to remote after creation"
+    echo -e "${BLUE}git-smart-switch - Enhanced branch switching with WIP management and commit movement${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  git smart-switch [<target-branch>] [OPTIONS]"
+    echo ""
+    echo -e "${YELLOW}Branch creation options:${NC}"
+    echo "  -p, --push              Push the new branch to remote after creation"
+    echo "  -k, --keep              Create new branch based on current state instead of origin/main"
+    echo "                          (preserves working state on source branch)"
+    echo ""
+    echo -e "${YELLOW}Move options:${NC}"
+    echo "  -m, --move [commit]     SMART MOVE: Intelligently move commits with strategy selection"
+    echo "                          • Three rebase strategies: CLEAN SLATE, PRESERVE SOURCE, STACK ON TARGET"
+    echo "                          • Pre-checks for conflicts and guides resolution"
+    echo "                          • Creates safety backups and allows rollback"
+    echo "                          If no commit specified, shows interactive commit selection"
+    echo "  -w, --move-working      Move only current working state (staged/unstaged changes)"
+    echo "                          (cleans up working state from source branch)"
+    echo ""
+    echo -e "${YELLOW}Safety options:${NC}"
+    echo "  --dry-run               Preview operations without executing them"
+    echo "  --force                 Skip safety confirmations (use with caution)"
+    echo ""
+    echo -e "${YELLOW}Other options:${NC}"
+    echo "  -h, --help              Show this help message"
+    echo ""
+    echo -e "${YELLOW}Smart Move Features:${NC}"
+    echo "  🔍 Three rebase strategies available:"
+    echo "     • CLEAN SLATE: origin/main → C'→D' (fresh start)"
+    echo "     • PRESERVE SOURCE: origin/main → A→B → C'→D' (keep source history)"
+    echo "     • STACK ON TARGET: origin/main → F→G → C'→D' (build on target)"
+    echo "  🛡️  Safety features:"
+    echo "     • Conflict pre-detection and guided resolution"
+    echo "     • Automatic backup creation with rollback option"
+    echo "     • Working state preservation during moves"
+    echo "     • Dry-run mode for preview without execution"
+    echo ""
+    echo -e "${YELLOW}Key differences:${NC}"
+    echo "  -k: Creates branch WITH current state, leaves source unchanged"
+    echo "  -w: Moves working changes TO target, leaves source clean"
+    echo "  -m: SMART moves commits with three rebase strategy options"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo -e "${GREEN}  git smart-switch feature-branch${NC}       # Switch to or create feature-branch"
+    echo -e "${GREEN}  git smart-switch new-branch -k${NC}        # Create new-branch from current state (source keeps changes)"
+    echo -e "${GREEN}  git smart-switch correct-branch -m${NC}    # Smart move: choose from 3 rebase strategies"
+    echo -e "${GREEN}  git smart-switch correct-branch -m --dry-run${NC}  # Preview smart move without executing"
+    echo -e "${GREEN}  git smart-switch stacked-feature -m${NC}   # Smart move: options include stacking if target has commits"
+    echo -e "${GREEN}  git smart-switch target -w${NC}            # Move only working changes to target (source becomes clean)"
     exit 1
 }
 
 # Check if 'fzf' is available
 fzf_check=$(command -v fzf)
+FZF_AVAILABLE=$([[ -n "$fzf_check" ]] && echo 1 || echo 0)
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
 # Function to select a branch using fzf or a fallback method, now only showing local branches
 select_branch() {
-    if [ -n "$fzf_check" ]; then
+    if [ "$FZF_AVAILABLE" -eq 1 ]; then
         # Using fzf to select a local branch, highlighting the current branch
         echo "Select a branch (current branch is highlighted):" >&2
         selected_branch=$(git branch --sort=-committerdate | fzf --height 20% --reverse |  sed -e 's/^[\* ]*//')
@@ -37,18 +104,545 @@ select_branch() {
     echo $selected_branch
 }
 
+# Function to select a commit for move operation
+select_commit() {
+    echo "Select a commit to move (including all commits after it):" >&2
+    
+    # Get recent commits with formatting
+    if [ "$FZF_AVAILABLE" -eq 1 ]; then
+        # Use git log without --graph for cleaner parsing, then extract commit hash
+        selected_commit=$(git log --oneline --decorate -20 | fzf --height 50% --reverse --header "Select commit to move (all commits from this point forward will be moved)" | awk '{print $1}')
+    else
+        echo "Recent commits (newest first):" >&2
+        echo "" >&2
+        git log --oneline --decorate -20 >&2
+        echo "" >&2
+        echo "Enter the commit hash to move from:" >&2
+        read -r selected_commit
+    fi
+    
+    # Clean up commit hash (remove any extra characters)
+    selected_commit=$(echo "$selected_commit" | sed 's/[^a-f0-9]//g')
+    
+    # Validate commit hash
+    if [[ -z "$selected_commit" ]] || ! git rev-parse --verify "$selected_commit" >/dev/null 2>&1; then
+        echo "Invalid commit hash: $selected_commit" >&2
+        return 1
+    fi
+    
+    echo $selected_commit
+}
+
+# Function to move only working state
+move_working_state() {
+    local target_branch="$1"
+    local current_branch=$(git rev-parse --abbrev-ref HEAD)
+    
+    echo "Moving only working state (staged/unstaged changes) to branch: $target_branch"
+    
+    # Check if there are any changes to move
+    if git diff --quiet && git diff --cached --quiet && [[ -z "$(git status --porcelain)" ]]; then
+        echo "No changes in working state to move."
+        return 1
+    fi
+    
+    echo "Changes to be moved:"
+    git status --short
+    echo ""
+    
+    if [ "$dry_run" = true ]; then
+        echo "${YELLOW}[DRY RUN]${NC} Would move working state from '$current_branch' to '$target_branch'"
+        echo "${YELLOW}[DRY RUN]${NC} Operations that would be performed:"
+        echo "  1. Stash current changes with message 'Moving working state to $target_branch'"
+        echo "  2. Create/switch to branch '$target_branch'"
+        echo "  3. Apply stashed changes"
+        echo "  4. Leave '$current_branch' in clean state"
+        return 0
+    fi
+    
+    if [ "$force_mode" = false ]; then
+        read -p "Confirm move working state? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Move operation cancelled"
+            return 1
+        fi
+    fi
+    
+    # Stash current changes
+    git stash push -u -m "Moving working state to $target_branch"
+    
+    # Create or switch to target branch
+    if git rev-parse --verify "$target_branch" >/dev/null 2>&1; then
+        echo "Switching to existing branch '$target_branch'..."
+        git checkout "$target_branch"
+    else
+        echo "Creating new branch '$target_branch' from origin/main..."
+        git fetch origin
+        git checkout -b "$target_branch" origin/main
+    fi
+    
+    # Apply the stashed changes
+    git stash pop
+    
+    echo "✓ Working state moved successfully!"
+    echo "✓ Working changes moved to branch: $target_branch"
+    echo "✓ Original branch '$current_branch' is now clean"
+    echo "✓ Currently on branch: $target_branch"
+}
+
+# Function to analyze available rebase strategies
+analyze_rebase_strategy() {
+    local move_from_commit="$1"
+    local target_branch="$2"
+    local current_branch="$3"
+    
+    # Get the parent commit (where current branch will be reset to)
+    local parent_commit=$(git rev-parse "$move_from_commit^")
+    
+    # Check if target branch exists
+    local target_exists=false
+    if git rev-parse --verify "$target_branch" >/dev/null 2>&1; then
+        target_exists=true
+    fi
+    
+    echo "🔍 Analyzing rebase options for commits $(git rev-parse --short $move_from_commit)→$(git rev-parse --short HEAD)"
+    echo ""
+    echo "📋 Available rebase strategies:"
+    echo ""
+    echo "1. CLEAN SLATE - Rebase on origin/main"
+    echo "   └─ Result: origin/main → C'→D'"
+    echo "   └─ Use when: Commits can be cleanly rebased independently"
+    echo ""
+    echo "2. PRESERVE SOURCE - Rebase on source branch history"
+    echo "   └─ Result: origin/main → A→B → C'→D'"
+    echo "   └─ Use when: Moved commits depend on A→B changes that will be merged separately"
+    echo ""
+    
+    if [[ "$target_exists" == "true" ]]; then
+        # Target branch exists - check if it has commits
+        local target_base=$(git merge-base "$target_branch" origin/main 2>/dev/null || git merge-base "$target_branch" origin/master 2>/dev/null || echo "")
+        local target_head=$(git rev-parse "$target_branch")
+        
+        if [[ "$target_base" != "$target_head" ]]; then
+            echo "3. STACK ON TARGET - Rebase on top of existing target commits"
+            echo "   └─ Result: origin/main → F→G → C'→D'"
+            echo "   └─ Use when: Building features that depend on target branch"
+            echo ""
+            return 0  # has target commits
+        else
+            echo "3. STACK ON TARGET - Not available (target branch is clean)"
+            echo ""
+            return 1  # clean target
+        fi
+    else
+        echo "3. STACK ON TARGET - Not available (target branch doesn't exist)"
+        echo ""
+        return 2  # no target
+    fi
+}
+
+# Function to check for potential conflicts
+check_rebase_conflicts() {
+    local move_from_commit="$1"
+    local target_base="$2"
+    local current_branch="$3"
+    
+    echo "🔍 Checking for potential conflicts..."
+    
+    # Create a temporary branch to test the rebase
+    local test_branch="temp-rebase-test-$$"
+    git branch "$test_branch" "$target_base" >/dev/null 2>&1
+    
+    # Try to cherry-pick the commits to see if there are conflicts
+    local has_conflicts=false
+    git checkout "$test_branch" >/dev/null 2>&1
+    
+    # Get list of commits to move
+    local commits_to_move
+    mapfile -t commits_to_move < <(git rev-list --reverse "$move_from_commit...$current_branch")
+    local total_commits=${#commits_to_move[@]}
+    local checked_commits=0
+    
+    for commit in "${commits_to_move[@]}"; do
+        checked_commits=$((checked_commits + 1))
+        printf "\r🕰️ Checking conflicts... [$checked_commits/$total_commits] "
+        if ! git cherry-pick "$commit" >/dev/null 2>&1; then
+            has_conflicts=true
+            git cherry-pick --abort >/dev/null 2>&1
+            break
+        fi
+    done
+    
+    echo "" # New line after progress
+    
+    # Cleanup
+    git checkout "$current_branch" >/dev/null 2>&1
+    git branch -D "$test_branch" >/dev/null 2>&1
+    
+    if [[ "$has_conflicts" == "true" ]]; then
+        echo "⚠️  Potential conflicts detected"
+        echo "   └─ Manual conflict resolution may be required"
+        return 1
+    else
+        echo "✅ No conflicts detected - rebase should be clean"
+        return 0
+    fi
+}
+
+# Function to perform commit move operation with intelligent rebase strategy
+move_commits() {
+    local target_branch="$1"
+    local move_from_commit="$2"
+    local current_branch=$(git rev-parse --abbrev-ref HEAD)
+    
+    echo "Moving commits from $move_from_commit onwards to branch: $target_branch"
+    
+    # Validate that the commit exists and is on current branch
+    if ! git merge-base --is-ancestor "$move_from_commit" HEAD; then
+        echo "Error: Commit $move_from_commit is not an ancestor of current HEAD"
+        return 1
+    fi
+    
+    # Get the commit before the one we want to move
+    local parent_commit=$(git rev-parse "$move_from_commit^")
+    
+    # Check if parent commit exists (not the root commit)
+    if ! git rev-parse --verify "$parent_commit" >/dev/null 2>&1; then
+        echo "Error: Cannot move from root commit. The commit $move_from_commit has no parent."
+        return 1
+    fi
+    
+    echo "Current branch will be reset to: $parent_commit"
+    echo "Commits to be moved:"
+    git log --oneline "$parent_commit..HEAD"
+    echo ""
+    
+    # Analyze available strategies
+    analyze_rebase_strategy "$move_from_commit" "$target_branch" "$current_branch"
+    local target_status=$?
+    
+    # parent_commit is already set above, avoid duplicate calculation
+    
+    echo "💡 Choose your rebase strategy:"
+    echo ""
+    echo "1. CLEAN SLATE - Rebase on origin/main"
+    echo "   └─ Use when: Commits can be cleanly rebased independently"
+    echo "   └─ Result: Fresh start from main, no source history"
+    echo ""
+    echo "2. PRESERVE SOURCE - Rebase on source branch history" 
+    echo "   └─ Use when: Moved commits depend on source changes that will be merged separately"
+    echo "   └─ Result: Keeps $(git rev-parse --short origin/main)→$(git rev-parse --short $parent_commit) from source branch"
+    echo ""
+    
+    # Only offer stacking if target branch has commits
+    local stack_available=false
+    if [[ $target_status -eq 0 ]]; then
+        echo "3. STACK ON TARGET - Rebase on top of target commits"
+        echo "   └─ Builds on existing commits in target branch"
+        echo ""
+        stack_available=true
+    else
+        echo "3. STACK ON TARGET - Not available (target has no commits)"
+        echo ""
+    fi
+    
+    echo "4. Cancel operation"
+    echo ""
+    
+    # Get user choice
+    read -r -p "Select strategy (1-4) [1]: " strategy_choice
+    
+    # Set rebase parameters based on choice
+    local rebase_base
+    local strategy_name
+    
+    case $strategy_choice in
+        1)
+            # Clean slate - rebase on origin/main
+            rebase_base="origin/main"
+            if ! git rev-parse --verify "$rebase_base" >/dev/null 2>&1; then
+                rebase_base="origin/master"
+            fi
+            strategy_name="CLEAN SLATE"
+            ;;
+        2)
+            # Preserve source - rebase on parent commit of selection
+            rebase_base="$parent_commit"
+            strategy_name="PRESERVE SOURCE"
+            ;;
+        3)
+            if [[ "$stack_available" = true ]]; then
+                # Stack on target
+                rebase_base="$target_branch"
+                strategy_name="STACK ON TARGET"
+            else
+                echo "⚠️  Stack on target not available. Using clean slate instead."
+                rebase_base="origin/main"
+                if ! git rev-parse --verify "$rebase_base" >/dev/null 2>&1; then
+                    rebase_base="origin/master"
+                fi
+                strategy_name="CLEAN SLATE (fallback)"
+            fi
+            ;;
+        4)
+            echo "Move operation cancelled"
+            return 1
+            ;;
+        *)
+            # Default to clean slate
+            echo "Invalid choice, defaulting to CLEAN SLATE"
+            rebase_base="origin/main"
+            if ! git rev-parse --verify "$rebase_base" >/dev/null 2>&1; then
+                rebase_base="origin/master"
+            fi
+            strategy_name="CLEAN SLATE (default)"
+            ;;
+    esac
+    
+    # Check for conflicts with selected strategy
+    echo ""
+    echo "🔍 Checking for conflicts with $strategy_name strategy..."
+    check_rebase_conflicts "$move_from_commit" "$rebase_base" "$current_branch"
+    local conflict_check=$?
+    
+    echo ""
+    echo "📋 FINAL REBASE PLAN:"
+    echo "   Strategy: $strategy_name"
+    echo "   Target branch: $target_branch"
+    echo "   Rebase base: $rebase_base"
+    echo "   Commits to move: $(git rev-parse --short $move_from_commit)→$(git rev-parse --short HEAD)"
+    echo "   Source will reset to: $(git rev-parse --short $parent_commit)"
+    echo "   Conflicts: $([ $conflict_check -eq 0 ] && echo "None expected" || echo "Possible")"
+    echo ""
+    
+    if [ "$dry_run" = true ]; then
+        echo "${YELLOW}[DRY RUN]${NC} Would execute smart rebase with the following steps:"
+        echo "${YELLOW}[DRY RUN]${NC} 1. Create safety backup: ${current_branch}-backup-$(date +%s)"
+        echo "${YELLOW}[DRY RUN]${NC} 2. Create WIP commits to preserve working state"
+        echo "${YELLOW}[DRY RUN]${NC} 3. Create/switch to target branch: $target_branch"
+        echo "${YELLOW}[DRY RUN]${NC} 4. Cherry-pick commits using $strategy_name strategy"
+        echo "${YELLOW}[DRY RUN]${NC} 5. Reset source branch '$current_branch' to $parent_commit"
+        echo "${YELLOW}[DRY RUN]${NC} 6. Restore working state on target branch"
+        return 0
+    fi
+    
+    echo ""
+    
+    if [ "$force_mode" = false ]; then
+        read -p "Confirm move operation? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Move operation cancelled"
+            return 1
+        fi
+    fi
+    
+    # Create safety backup
+    local backup_branch="${current_branch}-backup-$(date +%s)"
+    echo "🔒 Creating safety backup: $backup_branch"
+    git branch "$backup_branch" "$current_branch"
+    
+    # Create WIP commits to preserve working state
+    create_wip
+    
+    # Execute the rebase strategy
+    execute_smart_rebase "$target_branch" "$move_from_commit" "$rebase_base" "$current_branch" "$parent_commit" "$backup_branch"
+}
+
+# Function to execute the smart rebase with guided conflict resolution
+execute_smart_rebase() {
+    local target_branch="$1"
+    local move_from_commit="$2"
+    local rebase_base="$3"
+    local current_branch="$4"
+    local parent_commit="$5"
+    local backup_branch="$6"
+    
+    echo "🚀 Executing smart rebase..."
+    
+    # Step 1: Create or switch to target branch
+    if git rev-parse --verify "$target_branch" >/dev/null 2>&1; then
+        echo "📍 Switching to existing branch '$target_branch'..."
+        git checkout "$target_branch"
+    else
+        echo "🆕 Creating new branch '$target_branch' from $rebase_base..."
+        git checkout -b "$target_branch" "$rebase_base"
+    fi
+    
+    # Step 2: Fetch latest changes to ensure we're rebasing on the latest
+    git fetch origin >/dev/null 2>&1
+    
+    # Step 3: If rebasing on origin/main, update the base
+    if [[ "$rebase_base" == "origin/main" || "$rebase_base" == "origin/master" ]]; then
+        echo "🔄 Updating to latest $rebase_base..."
+        git reset --hard "$rebase_base"
+    fi
+    
+    # Step 4: Cherry-pick commits with conflict handling
+    echo "🍒 Cherry-picking commits..."
+    local commits_to_move=($(git rev-list --reverse "$move_from_commit...$current_branch"))
+    local total_commits=${#commits_to_move[@]}
+    local current_commit_num=0
+    local has_failures=false
+    
+    for commit in "${commits_to_move[@]}"; do
+        current_commit_num=$((current_commit_num + 1))
+        echo "📝 [$current_commit_num/$total_commits] Cherry-picking $(git log --oneline -1 "$commit")"
+        
+        if ! git cherry-pick "$commit"; then
+            echo ""
+            echo "⚠️  CONFLICT DETECTED while cherry-picking $commit"
+            echo "📝 Commit message: $(git log --oneline -1 "$commit")"
+            echo ""
+            echo "🔧 Conflict resolution options:"
+            echo "1. Resolve conflicts manually (recommended)"
+            echo "2. Skip this commit (dangerous - may break functionality)"
+            echo "3. Abort entire operation (restore from backup)"
+            echo ""
+            
+            while true; do
+                read -r -p "Select option (1-3): " conflict_choice
+                case $conflict_choice in
+                    1)
+                        echo ""
+                        echo "📚 CONFLICT RESOLUTION GUIDE:"
+                        echo "1. Edit the conflicted files shown below:"
+                        git status --porcelain | grep "^UU" || echo "   (No unmerged files detected - check git status)"
+                        echo ""
+                        echo "2. Look for conflict markers: <<<<<<< ======= >>>>>>>"
+                        echo "3. Choose the correct code and remove conflict markers"
+                        echo "4. After fixing conflicts, run: git add <fixed-files>"
+                        echo "5. Then run: git cherry-pick --continue"
+                        echo ""
+                        echo "📋 Current conflict status:"
+                        git status --short
+                        echo ""
+                        echo "🔄 Dropping you into a shell for manual resolution..."
+                        echo "💡 Type 'exit' when done to return to this script"
+                        echo ""
+                        
+                        # Start a sub-shell for conflict resolution
+                        bash
+                        
+                        # Check if cherry-pick was completed
+                        if [[ -f "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD" ]]; then
+                            echo "❌ Cherry-pick still in progress. Please complete it:"
+                            echo "   git add <resolved-files> && git cherry-pick --continue"
+                            echo "   OR git cherry-pick --abort to abort this commit"
+                            return 1
+                        else
+                            echo "✅ Cherry-pick completed successfully!"
+                            break
+                        fi
+                        ;;
+                    2)
+                        echo "⚠️  Skipping commit $commit..."
+                        git cherry-pick --skip
+                        echo "⚠️  Warning: Skipped commit may cause issues later!"
+                        break
+                        ;;
+                    3)
+                        echo "🚨 Aborting operation and restoring from backup..."
+                        git cherry-pick --abort
+                        restore_from_backup "$current_branch" "$backup_branch"
+                        return 1
+                        ;;
+                    *)
+                        echo "Invalid option. Please select 1, 2, or 3."
+                        ;;
+                esac
+            done
+        else
+            echo "✅ Successfully cherry-picked $commit"
+        fi
+    done
+    
+    # Step 5: Reset original branch
+    echo "🔄 Cleaning up original branch '$current_branch'..."
+    git checkout "$current_branch"
+    git reset --hard "$parent_commit"
+    
+    # Step 6: Switch back to target and restore WIP
+    git checkout "$target_branch"
+    restore_wip
+    
+    # Step 7: Success message and cleanup
+    echo ""
+    echo "🎉 SUCCESS! Commits moved successfully!"
+    echo "✅ Original branch '$current_branch' reset to: $parent_commit"
+    echo "✅ Commits rebased onto: $target_branch"
+    echo "✅ Currently on: $target_branch"
+    echo ""
+    echo "🗑️  Cleanup options:"
+    echo "1. Keep backup branch '$backup_branch' (recommended for now)"
+    echo "2. Delete backup branch (only if you're confident)"
+    echo ""
+    read -r -p "Delete backup branch? (y/N): " delete_backup
+    
+    if [[ "$delete_backup" =~ ^[Yy]$ ]]; then
+        git branch -D "$backup_branch"
+        echo "🗑️  Backup branch '$backup_branch' deleted"
+    else
+        echo "🔒 Backup branch '$backup_branch' preserved"
+        echo "💡 Delete it later with: git branch -D $backup_branch"
+    fi
+}
+
+# Function to restore from backup in case of failure
+restore_from_backup() {
+    local current_branch="$1"
+    local backup_branch="$2"
+    
+    echo "🚨 RESTORING FROM BACKUP"
+    echo "🔄 Switching to original branch: $current_branch"
+    git checkout "$current_branch" 2>/dev/null || git checkout -b "$current_branch"
+    
+    echo "⏪ Restoring original state from backup: $backup_branch"
+    git reset --hard "$backup_branch"
+    
+    echo "✅ Original state restored!"
+    echo "🔒 Backup branch '$backup_branch' preserved for safety"
+    echo "💡 You can delete it later with: git branch -D $backup_branch"
+}
+
+# Function to validate network connectivity
+check_network_connectivity() {
+    if ! git ls-remote origin >/dev/null 2>&1; then
+        echo "${YELLOW}Warning: Unable to connect to remote 'origin'. Some operations may fail.${NC}"
+        echo "Continue anyway? (y/N)"
+        read -r -p "" continue_offline
+        if [[ ! "$continue_offline" =~ ^[Yy]$ ]]; then
+            echo "Operation cancelled"
+            exit 1
+        fi
+        return 1
+    fi
+    return 0
+}
+
 # Function to check if the repository is in a safe state to switch branches
 check_repo_state() {
     # Check for rebase in progress
     if [ -d "$(git rev-parse --git-path rebase-merge)" ] || \
        [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
-        echo "Error: Rebase in progress. Please complete or abort the rebase before switching branches."
+        echo "${RED}Error: Rebase in progress. Please complete or abort the rebase before switching branches.${NC}"
         exit 1
     fi
 
     # Check for merge in progress
     if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
-        echo "Error: Merge in progress. Please complete or abort the merge before switching branches."
+        echo "${RED}Error: Merge in progress. Please complete or abort the merge before switching branches.${NC}"
+        exit 1
+    fi
+    
+    # Check for cherry-pick in progress
+    if [ -f "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD" ]; then
+        echo "${RED}Error: Cherry-pick in progress. Please complete or abort the cherry-pick before switching branches.${NC}"
+        exit 1
+    fi
+    
+    # Check if we're in a git repository
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "${RED}Error: Not in a git repository.${NC}"
         exit 1
     fi
 }
@@ -57,6 +651,12 @@ check_repo_state() {
 # Main script starts here
 new_branch=""
 push_to_remote=false
+keep_current_state=false
+move_mode=false
+move_working_mode=false
+move_commit=""
+dry_run=false
+force_mode=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -64,6 +664,34 @@ while [[ $# -gt 0 ]]; do
         -p|--push)
             push_to_remote=true
             shift
+            ;;
+        -k|--keep)
+            keep_current_state=true
+            shift
+            ;;
+        -m|--move)
+            move_mode=true
+            # Check if next argument is a commit hash (doesn't start with -)
+            if [[ $# -gt 1 && ! "$2" =~ ^- ]]; then
+                move_commit="$2"
+                shift
+            fi
+            shift
+            ;;
+        -w|--move-working)
+            move_working_mode=true
+            shift
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        --force)
+            force_mode=true
+            shift
+            ;;
+        -h|--help)
+            usage
             ;;
         *)
             if [ -z "$new_branch" ]; then
@@ -80,8 +708,68 @@ done
 # Check repository state before proceeding
 check_repo_state
 
+# Check network connectivity for operations that need it
+if [[ "$move_mode" = true || "$push_to_remote" = true ]]; then
+    check_network_connectivity
+    NETWORK_AVAILABLE=$?
+else
+    NETWORK_AVAILABLE=0
+fi
+
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 
+# Handle move working mode
+if [ "$move_working_mode" = true ]; then
+    if [ -z "$new_branch" ]; then
+        new_branch=$(select_branch)
+        if [ -z "$new_branch" ]; then
+            echo "No target branch selected for move working operation."
+            usage
+        fi
+    fi
+    
+    # Check if target branch is the same as current branch
+    if [ "$new_branch" = "$current_branch" ]; then
+        echo "Cannot move working state to the same branch."
+        exit 1
+    fi
+    
+    # Perform the move working state operation
+    move_working_state "$new_branch"
+    exit 0
+fi
+
+# Handle move mode
+if [ "$move_mode" = true ]; then
+    if [ -z "$new_branch" ]; then
+        new_branch=$(select_branch)
+        if [ -z "$new_branch" ]; then
+            echo "No target branch selected for move operation."
+            usage
+        fi
+    fi
+    
+    # Check if target branch is the same as current branch
+    if [ "$new_branch" = "$current_branch" ]; then
+        echo "Cannot move commits to the same branch."
+        exit 1
+    fi
+    
+    # Get commit to move from if not specified
+    if [ -z "$move_commit" ]; then
+        move_commit=$(select_commit)
+        if [ -z "$move_commit" ]; then
+            echo "No commit selected for move operation."
+            exit 1
+        fi
+    fi
+    
+    # Perform the move operation
+    move_commits "$new_branch" "$move_commit"
+    exit 0
+fi
+
+# Regular branch switching logic
 if [ -z "$new_branch" ]; then
     new_branch=$(select_branch)
     if [ -z "$new_branch" ]; then
@@ -108,10 +796,11 @@ create_wip() {
         fi
 
         # Move to the root directory of the project
-        cd "$(git rev-parse --show-toplevel)"
+        cd "$(git rev-parse --show-toplevel)" || return 1
 
-        # Clean the project using Maven wrapper if available
-        if [ -f "mvnw" ]; then
+        # Clean the project if this is dotCMS/core repository with Maven wrapper
+        if [ -f "mvnw" ] && git remote get-url origin 2>/dev/null | grep -q "dotCMS/core"; then
+            echo "Detected dotCMS/core repository - running Maven clean..."
             ./mvnw clean
         fi
 
@@ -138,19 +827,33 @@ create_wip
 
 git fetch origin
 
-# Switch to the new branch, creating it if necessary based on updated 'origin/main'
-# Switch to the new branch, creating it if necessary based on updated 'origin/main'
+# Switch to the new branch, creating it if necessary
 if git rev-parse --verify "$new_branch" >/dev/null 2>&1; then
+    # Branch already exists - switch to it
+    if [ "$keep_current_state" = true ]; then
+        echo "Warning: Branch '$new_branch' already exists. --keep option ignored."
+    fi
     git checkout "$new_branch"
 else
-    # Check if the branch exists on the remote
+    # Branch doesn't exist locally - check if it exists on remote
     if git show-ref --verify --quiet "refs/remotes/origin/$new_branch"; then
         # If the branch exists on the remote, check it out and track the remote branch
+        if [ "$keep_current_state" = true ]; then
+            echo "Warning: Branch '$new_branch' exists on remote. --keep option ignored."
+        fi
         git checkout --track "origin/$new_branch"
     else
-        # If the branch does not exist on the remote, create and switch to new branch based on origin/main
-        git fetch origin
-        git checkout -b "$new_branch" origin/main
+        # Branch doesn't exist anywhere - create it
+        if [ "$keep_current_state" = true ]; then
+            # Create new branch based on current state (HEAD)
+            echo "Creating new branch '$new_branch' based on current state..."
+            git checkout -b "$new_branch"
+        else
+            # Create new branch based on origin/main (original behavior)
+            echo "Creating new branch '$new_branch' based on origin/main..."
+            git fetch origin
+            git checkout -b "$new_branch" origin/main
+        fi
 
         # Push the new branch to remote only if the push flag is set
         if [ "$push_to_remote" = true ]; then
@@ -160,7 +863,11 @@ else
             # Set up the upstream configuration without pushing
             git config "branch.$new_branch.remote" origin
             git config "branch.$new_branch.merge" "refs/heads/$new_branch"
-            echo "New branch '$new_branch' created locally and tracking configured. Use 'git push' to push to remote when ready."
+            if [ "$keep_current_state" = true ]; then
+                echo "New branch '$new_branch' created locally from current state and tracking configured. Use 'git push' to push to remote when ready."
+            else
+                echo "New branch '$new_branch' created locally and tracking configured. Use 'git push' to push to remote when ready."
+            fi
         fi
     fi
 fi

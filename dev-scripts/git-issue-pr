@@ -1,17 +1,73 @@
 #!/bin/bash
 
+# git-issue-pr - Create pull requests linked to GitHub issues
+# Usage: git issue-pr [--help]
+
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
 
 # Call the check_updates.sh script from the determined directory
 "$script_dir/check_updates.sh"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Show help message
+show_help() {
+    echo -e "${BLUE}git-issue-pr - Create pull requests linked to GitHub issues${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  git issue-pr [--help]"
+    echo ""
+    echo -e "${YELLOW}Description:${NC}"
+    echo "  Creates a pull request for the current branch, automatically linking it to"
+    echo "  the GitHub issue based on the branch name. Supports conventional commit"
+    echo "  format and interactive configuration."
+    echo ""
+    echo -e "${YELLOW}Features:${NC}"
+    echo "  • Automatically detects issue number from branch name"
+    echo "  • Fetches issue title from GitHub"
+    echo "  • Interactive selection of commit type and scope"
+    echo "  • Supports conventional commit format"
+    echo "  • Links PR to issue automatically"
+    echo ""
+    echo -e "${YELLOW}Branch Format:${NC}"
+    echo "  • Expected: issue-{number}-{description}"
+    echo "  • Example: issue-123-fix-login-bug"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  --help, -h    Show this help message"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  git issue-pr          # Create PR for current branch"
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option '$1'${NC}"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+    shift
+done
 # Enhanced user interaction and feedback
-echo "Fetching current branch and issue information..."
+echo -e "${BLUE}Fetching current branch and issue information...${NC}"
 echo "-------------------------------------------------"
 
 # Check if gh is installed
 if ! command -v gh &> /dev/null; then
-    echo "GitHub CLI (gh) could not be found. Please install it to continue."
+    echo -e "${RED}GitHub CLI (gh) could not be found. Please install it to continue.${NC}"
     exit 1
 fi
 
@@ -20,51 +76,49 @@ BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
 ISSUE_NUMBER=$(echo "$BRANCH_NAME" | grep -o -E '^[0-9]+|issue-([0-9]+)' | grep -o -E '[0-9]+') # gh issue develop uses number at start by default
 
 if [ -z "$ISSUE_NUMBER" ]; then
-    echo "Error: No issue number found in the current branch name ($BRANCH_NAME). Ensure you are in the correct branch formatted like 'issue-123-your-feature'."
+    echo -e "${RED}Error: No issue number found in the current branch name ($BRANCH_NAME).${NC}"
+    echo -e "${BLUE}Ensure you are in the correct branch formatted like 'issue-123-your-feature'.${NC}"
     exit 1
 fi
 
-echo "Issue Number Detected: #$ISSUE_NUMBER"
+echo -e "${GREEN}Issue Number Detected: #$ISSUE_NUMBER${NC}"
 echo "-------------------------------------------------"
 
 # Fetch the issue title from GitHub
-echo "Retrieving issue title from GitHub..."
+echo -e "${BLUE}Retrieving issue title from GitHub...${NC}"
 ISSUE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json title --jq '.title' | tr -cd '[[:alnum:]]._ ' | cut -c 1-50)
-echo "Issue Title: $ISSUE_TITLE"
+echo -e "${GREEN}Issue Title: $ISSUE_TITLE${NC}"
 echo "-------------------------------------------------"
 
 # Interactive selection for commit type and scope
-echo "Select the type and scope of your changes:"
-COMMIT_TYPES=("feat" "fix" "build" "chore" "ci" "docs" "style" "refactor" "perf" "test" "revert" "NONE")
-COMMIT_SCOPES=("ui" "backend" "api" "tests" "deployment" "documentation" "NONE")
+echo -e "${YELLOW}Select the type and scope of your changes:${NC}"
+COMMIT_TYPES=("fix" "feat" "chore" "refactor" "docs" "test" "ci" "build" "perf" "style" "revert" "NONE")
+COMMIT_SCOPES=("uve" "core" "graphql" "sdk" "examples" "ui" "backend" "api" "workflow" "template-selector" "sessions" "content-search" "content-drive" "block-editor" "apps" "deployment" "ci" "docs" "deps" "NONE" "CUSTOM")
 
 # Check if fzf is installed
 if command -v fzf &> /dev/null; then
-    FZF_AVAILABLE=0
+    FZF_AVAILABLE=1
 else
     FZF_AVAILABLE=0
-    echo "fzf is not available, switching to manual selection."
+    echo -e "${YELLOW}fzf is not available, switching to manual selection.${NC}"
 fi
-
-# Interactive selection for commit type and scope
-echo "Select the type and scope of your changes:"
 if [ "$FZF_AVAILABLE" -eq 1 ]; then
     SELECTED_TYPE=$(printf "%s\n" "${COMMIT_TYPES[@]}" | fzf --height=50% --reverse --prompt="Select commit type: ")
     SELECTED_SCOPE=$(printf "%s\n" "${COMMIT_SCOPES[@]}" | fzf --height=50% --reverse --prompt="Select commit scope (or NONE for no scope): ")
 else
-    echo "Available commit types:"
+    echo -e "${BLUE}Available commit types:${NC}"
     for i in "${!COMMIT_TYPES[@]}"; do
         echo "$((i+1)). ${COMMIT_TYPES[$i]}"
     done
-    echo "Enter the number for the commit type:"
+    echo -e -n "${BLUE}Enter the number for the commit type:${NC} "
     read -r type_num
     SELECTED_TYPE=${COMMIT_TYPES[$((type_num-1))]}
 
-    echo "Available commit scopes:"
+    echo -e "${BLUE}Available commit scopes:${NC}"
     for i in "${!COMMIT_SCOPES[@]}"; do
         echo "$((i+1)). ${COMMIT_SCOPES[$i]}"
     done
-    echo "Enter the number for the commit scope (enter for NONE):"
+    echo -e -n "${BLUE}Enter the number for the commit scope (enter for NONE):${NC} "
     read -r scope_num
     if [ -n "$scope_num" ]; then
         SELECTED_SCOPE=${COMMIT_SCOPES[$((scope_num-1))]}
@@ -72,6 +126,18 @@ else
         SELECTED_SCOPE="NONE"
     fi
 fi
+
+# Handle custom scope input
+if [ "$SELECTED_SCOPE" = "CUSTOM" ]; then
+    echo -e -n "${BLUE}Enter your custom scope:${NC} "
+    read -r CUSTOM_SCOPE
+    if [ -n "$CUSTOM_SCOPE" ]; then
+        SELECTED_SCOPE="$CUSTOM_SCOPE"
+    else
+        SELECTED_SCOPE="NONE"
+    fi
+fi
+
 # Pre-define parentheses if scope is selected, otherwise set to an empty string
 SCOPE_PREFIX=""
 SCOPE_SUFFIX=""
@@ -84,62 +150,54 @@ fi
 
 # Construct the PR title with proper quoting and handling for special characters
 PR_TITLE="${SELECTED_TYPE}${SCOPE_PREFIX}${SELECTED_SCOPE}${SCOPE_SUFFIX}: ${ISSUE_TITLE} (#$ISSUE_NUMBER)"
-echo "Generated PR Title: $PR_TITLE"
+echo -e "${GREEN}Generated PR Title: $PR_TITLE${NC}"
 echo "-------------------------------------------------"
 
-# Interaction for closing issue
-echo "Does this PR close the issue? (y/N)"
-read -r CLOSES_ISSUE_REPLY
-echo "-------------------------------------------------"
 
 # PR templates handling
 TEMPLATE_PATH=".github/PULL_REQUEST_TEMPLATE"
 SINGLE_TEMPLATE_PATH="$TEMPLATE_PATH.md" # Path for a single template
 
-echo "Checking for PR templates..."
+echo -e "${BLUE}Checking for PR templates...${NC}"
 
 if [ -f "$SINGLE_TEMPLATE_PATH" ]; then
-    echo "Single PR template found."
+    echo -e "${GREEN}Single PR template found.${NC}"
     SELECTED_TEMPLATE="$SINGLE_TEMPLATE_PATH"
 elif [ -d "$TEMPLATE_PATH" ]; then
     TEMPLATE_FILES=("$TEMPLATE_PATH"/*.md)
 
     # Check the number of templates
     if [ ${#TEMPLATE_FILES[@]} -eq 1 ]; then
-        echo "Single PR template found in template directory."
+        echo -e "${GREEN}Single PR template found in template directory.${NC}"
         SELECTED_TEMPLATE="${TEMPLATE_FILES[0]}"
     elif [ ${#TEMPLATE_FILES[@]} -gt 1 ]; then
-        echo "Multiple PR templates found. Please select one:"
+        echo -e "${BLUE}Multiple PR templates found. Please select one:${NC}"
         if [ "$FZF_AVAILABLE" -eq 1 ]; then
             SELECTED_TEMPLATE=$(printf "%s\n" "${TEMPLATE_FILES[@]}" | fzf --height=50% --reverse)
         else
-            echo "Available PR templates:"
+            echo -e "${BLUE}Available PR templates:${NC}"
             for i in "${!TEMPLATE_FILES[@]}"; do
                 echo "$((i+1)). ${TEMPLATE_FILES[$i]##*/}" # Display just the filename
             done
-            echo "Enter the number for the PR template:"
+            echo -e -n "${BLUE}Enter the number for the PR template:${NC} "
             read -r template_num
             if ! [[ $template_num =~ ^[0-9]+$ ]] || [ $template_num -lt 1 ] || [ $template_num -gt ${#TEMPLATE_FILES[@]} ]; then
-                echo "Invalid selection. Using the first template as default."
+                echo -e "${YELLOW}Invalid selection. Using the first template as default.${NC}"
                 template_num=1
             fi
             SELECTED_TEMPLATE="${TEMPLATE_FILES[$((template_num-1))]}"
         fi
     else
-        echo "No PR template found in the template directory. Continuing without a template."
+        echo -e "${YELLOW}No PR template found in the template directory. Continuing without a template.${NC}"
         SELECTED_TEMPLATE=""
     fi
 else
-    echo "No PR template found. Continuing without a template."
+    echo -e "${YELLOW}No PR template found. Continuing without a template.${NC}"
     SELECTED_TEMPLATE=""
 fi
 
-# Construct ISSUE_CONTENT based on users choice
-if [[ $CLOSES_ISSUE_REPLY =~ ^[Yy]$ ]]; then
-    ISSUE_CONTENT="This PR resolves #$ISSUE_NUMBER (${ISSUE_TITLE})."
-else
-    ISSUE_CONTENT="Related to #$ISSUE_NUMBER (${ISSUE_TITLE})."
-fi
+# Construct ISSUE_CONTENT
+ISSUE_CONTENT="Related to #$ISSUE_NUMBER (${ISSUE_TITLE})."
 
 # Prepare PR_BODY by replacing placeholder in the template or creating a new content
 if [ -n "$SELECTED_TEMPLATE" ]; then
@@ -166,23 +224,40 @@ PR_BODY_NO_HEADER=$(echo "$PR_BODY" | sed '/^---$/,/^---$/d')
 
 
 # Prepare the file for user editing
-echo "Please review the PR details in the editor. You can make additional changes as needed."
+echo -e "${BLUE}Please review the PR details in the editor. You can make additional changes as needed.${NC}"
 TEMP_PR_BODY_FILE=$(mktemp)
 echo -e "$PR_BODY_NO_HEADER" > "$TEMP_PR_BODY_FILE"
 ${EDITOR:-vi} "$TEMP_PR_BODY_FILE"
 PR_BODY=$(cat "$TEMP_PR_BODY_FILE")
 rm "$TEMP_PR_BODY_FILE"
 
-# Confirm before creating the PR
-echo "Review the PR details:"
-echo "Title: $PR_TITLE"
-echo "Body: $PR_BODY"
+# Ask about WIP status
+echo -e -n "${BLUE}Create this PR as Work In Progress (WIP)? (Y/n):${NC} "
+read -r WIP_REPLY
+WIP_FLAG=""
+if [[ ! $WIP_REPLY =~ ^[Nn]$ ]]; then
+    WIP_FLAG="--draft"
+    echo -e "${YELLOW}PR will be created as a draft (WIP).${NC}"
+else
+    echo -e "${GREEN}PR will be created as ready for review.${NC}"
+fi
 echo "-------------------------------------------------"
-echo "Create the PR? (y/N)"
+
+# Confirm before creating the PR
+echo -e "${YELLOW}Review the PR details:${NC}"
+echo -e "${BLUE}Title:${NC} $PR_TITLE"
+echo -e "${BLUE}Body:${NC} $PR_BODY"
+echo -e "${BLUE}Status:${NC} $([ -n "$WIP_FLAG" ] && echo "Draft (WIP)" || echo "Ready for review")"
+echo "-------------------------------------------------"
+echo -e -n "${BLUE}Create the PR? (y/N):${NC} "
 read -r CREATE_PR_REPLY
 if [[ $CREATE_PR_REPLY =~ ^[Yy]$ ]]; then
     # Create the pull request
-    gh pr create --title "$PR_TITLE" --body "$PR_BODY"
+    gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG
+    echo -e "${GREEN}PR created successfully!${NC}"
+    if [ -n "$WIP_FLAG" ]; then
+        echo -e "${BLUE}Note: PR created as draft. Mark as ready for review when complete.${NC}"
+    fi
 else
-    echo "PR creation cancelled."
+    echo -e "${YELLOW}PR creation cancelled.${NC}"
 fi

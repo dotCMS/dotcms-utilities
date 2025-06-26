@@ -2,12 +2,14 @@
 
 # Color definitions
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # GitHub repository information
 REPO_OWNER="dotcms"
 REPO_NAME="dotcms-utilities"
 BRANCH="main"
+REF="main"  # Default ref
 
 # Cache file for the latest commit hash
 CACHE_FILE="$HOME/.dotcms/dev-scripts/.dotcms_latest_hash"
@@ -24,7 +26,7 @@ error_silent() {
 
 # Function to get the latest commit hash from the GitHub repository
 get_latest_commit_hash() {
-    local api_url="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/commits/$BRANCH"
+    local api_url="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/commits/$REF"
     local commit_hash=$(curl -s "$api_url" | grep -m 1 '"sha":' | cut -d '"' -f 4)
     echo "$commit_hash"
 }
@@ -75,9 +77,40 @@ check_for_updates() {
 
 # Function to show update warning
 show_update_warning() {
+    # Read the installed ref if available
+    local installed_ref="main"  # Default assumption
+    if [[ -f "$BIN_DIR/.ref" ]]; then
+        installed_ref=$(cat "$BIN_DIR/.ref")
+        REF="$installed_ref"  # Use the installed ref for checking updates
+    fi
+    
+    # Determine if this is a local source installation
+    local install_source="remote"  # Default assumption
+    if [[ -f "$BIN_DIR/.source" ]]; then
+        install_source=$(cat "$BIN_DIR/.source")
+    fi
+    
+    # Always show ref information for non-main installations
+    if [[ "$installed_ref" != "main" ]]; then
+        if [[ "$install_source" == "local" ]]; then
+            echo -e "${BLUE}ℹ️  Running from local source (ref: $installed_ref)${NC}"
+        else
+            echo -e "${BLUE}ℹ️  Running from remote installation (ref: $installed_ref)${NC}"
+        fi
+    fi
+    
+    local has_updates=false
     if check_for_updates; then
-        echo -e "${YELLOW}An update is available${NC}"
-        echo -e "${YELLOW}To update, run:  ${NC}bash <(curl -fsSL https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH/install-dev-scripts.sh)"
+        has_updates=true
+        if [[ "$installed_ref" != "main" ]]; then
+            echo -e "${YELLOW}An update is available for ref: $installed_ref${NC}"
+            echo -e "${YELLOW}You are using a non-default installation from: $installed_ref${NC}"
+            echo -e "${YELLOW}To update this ref:    ${NC}DOTCMS_INSTALL_REF=\"$installed_ref\" bash <(curl -fsSL https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$installed_ref/install-dev-scripts.sh)"
+            echo -e "${YELLOW}To switch to default:  ${NC}bash <(curl -fsSL https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/main/install-dev-scripts.sh)"
+        else
+            echo -e "${YELLOW}An update is available${NC}"
+            echo -e "${YELLOW}To update, run:  ${NC}bash <(curl -fsSL https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/main/install-dev-scripts.sh)"
+        fi
     fi
 }
 
