@@ -1130,6 +1130,11 @@ else
         *) TYPE="Bug" ;;
     esac
     echo -e "${GREEN}✓ Issue type: $TYPE${NC}"
+else
+    # No issue types available in this organization
+    echo -e "${YELLOW}No issue types configured for organization '${ORG_NAME}'${NC}"
+    echo -e "${BLUE}Continuing without issue type selection...${NC}"
+    TYPE=""
 fi
     
 echo -e "${BLUE}📝 Note: Issue type is for project organization (separate from repository labels)${NC}"
@@ -1542,7 +1547,9 @@ if [[ "$CLI_TEAM_SET" == true || "$CLI_PRIORITY_SET" == true || "$CLI_TYPE_SET" 
         AVAILABLE_TYPES=$(get_org_issue_types "$ORG_NAME")
         
         if [[ -z "$AVAILABLE_TYPES" ]]; then
-            echo -e "${YELLOW}Warning: Could not fetch issue types from organization${NC}"
+            echo -e "${YELLOW}Warning: Could not fetch issue types from organization '${ORG_NAME}' - issue types are not available${NC}"
+            echo -e "${BLUE}Continuing without issue type validation...${NC}"
+            TYPE=""  # Clear the type since it's not available
         else
             type_found=false
             while IFS= read -r available_type; do
@@ -1629,7 +1636,11 @@ echo -e "${YELLOW}Creating issue with:${NC}"
 echo -e "  Repository: ${GREEN}$REPOSITORY${NC}"
 echo -e "  Title: ${GREEN}$TITLE${NC}"
 echo -e "  Team: ${GREEN}$TEAM${NC}"
-echo -e "  Type: ${GREEN}$TYPE${NC}"
+if [[ -n "$TYPE" ]]; then
+    echo -e "  Type: ${GREEN}$TYPE${NC}"
+else
+    echo -e "  Type: ${YELLOW}[Not available]${NC}"
+fi
 echo -e "  Priority: ${GREEN}$PRIORITY${NC}"
 if [[ ${#LABELS[@]} -gt 0 ]]; then
     echo -e "  Labels:"
@@ -1710,7 +1721,11 @@ if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
     
     echo -e "${GREEN}✓ Issue created successfully!${NC}"
     echo -e "  Issue #${ISSUE_NUMBER}: $ISSUE_URL"
-    echo -e "  Issue Type: ${GREEN}$TYPE${NC}"
+    if [[ -n "$TYPE" ]]; then
+        echo -e "  Issue Type: ${GREEN}$TYPE${NC}"
+    else
+        echo -e "  Issue Type: ${YELLOW}[Not available in this repository]${NC}"
+    fi
     
     # Add to project if specified  
     if [[ "$PROJECT_ID" == "7" ]]; then
