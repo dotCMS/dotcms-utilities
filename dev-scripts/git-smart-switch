@@ -851,6 +851,63 @@ restore_wip() {
     fi
 }
 
+# Dry run preview for regular branch switching
+if [ "$dry_run" = true ]; then
+    echo "${YELLOW}[DRY RUN]${NC} Branch switching preview:"
+    echo "${YELLOW}[DRY RUN]${NC} Current branch: $current_branch"
+    echo "${YELLOW}[DRY RUN]${NC} Target branch: $new_branch"
+    echo ""
+    
+    # Check if we have working changes
+    if [ -n "$(git status --porcelain --ignored)" ]; then
+        echo "${YELLOW}[DRY RUN]${NC} Working changes detected - would create WIP commits"
+    else
+        echo "${YELLOW}[DRY RUN]${NC} No working changes - clean working directory"
+    fi
+    
+    # Check what would happen with the target branch
+    if git rev-parse --verify "$new_branch" >/dev/null 2>&1; then
+        echo "${YELLOW}[DRY RUN]${NC} Would switch to existing local branch: $new_branch"
+        if [ "$keep_current_state" = true ]; then
+            echo "${YELLOW}[DRY RUN]${NC} Warning: --keep option would be ignored (branch already exists)"
+        fi
+    else
+        # Check if it exists on remote
+        if git show-ref --verify --quiet "refs/remotes/origin/$new_branch"; then
+            echo "${YELLOW}[DRY RUN]${NC} Would checkout and track remote branch: origin/$new_branch"
+            if [ "$keep_current_state" = true ]; then
+                echo "${YELLOW}[DRY RUN]${NC} Warning: --keep option would be ignored (remote branch exists)"
+            fi
+        else
+            # Would create new branch
+            if [ "$keep_current_state" = true ]; then
+                echo "${YELLOW}[DRY RUN]${NC} Would create new branch '$new_branch' from current state (HEAD)"
+            else
+                echo "${YELLOW}[DRY RUN]${NC} Would create new branch '$new_branch' from origin/main"
+            fi
+            
+            if [ "$push_to_remote" = true ]; then
+                echo "${YELLOW}[DRY RUN]${NC} Would push new branch to remote with upstream tracking"
+            else
+                echo "${YELLOW}[DRY RUN]${NC} Would configure upstream tracking (no push)"
+            fi
+        fi
+    fi
+    
+    echo ""
+    echo "${YELLOW}[DRY RUN]${NC} Operations that would be performed:"
+    echo "  1. Fetch latest changes from origin"
+    if [ -n "$(git status --porcelain --ignored)" ]; then
+        echo "  2. Create WIP commits for working changes"
+    fi
+    echo "  3. Switch to/create branch '$new_branch'"
+    if [ -n "$(git status --porcelain --ignored)" ]; then
+        echo "  4. Restore working state from WIP commits"
+    fi
+    
+    exit 0
+fi
+
 # Create WIP commits if necessary
 create_wip
 
