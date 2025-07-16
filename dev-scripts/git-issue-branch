@@ -20,6 +20,7 @@ NC='\033[0m' # No Color
 # Global variables for automation support
 JSON_OUTPUT=false
 LIST_MODE=false
+SKIP_PR_STATUS=true  # Default to skipping PR status for better performance
 
 # Show help message
 show_help() {
@@ -43,10 +44,12 @@ show_help() {
     echo "  --help, -h    Show this help message"
     echo "  --json        Output in JSON format (for automation)"
     echo "  --list        List issues without interactive selection"
+    echo "  --with-pr-status  Include PR status indicators (slower but more informative)"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
-    echo "  git issue-branch          # Interactive issue and branch selection"
+    echo "  git issue-branch          # Interactive issue and branch selection (fast)"
     echo "  git issue-branch --list --json  # List issues in JSON format for automation"
+    echo "  git issue-branch --with-pr-status  # Include PR status indicators (slower)"
     echo ""
     echo -e "${YELLOW}Branch Naming:${NC}"
     echo "  • Format: issue-{number}-{sanitized-title}"
@@ -128,6 +131,10 @@ while [[ $# -gt 0 ]]; do
             LIST_MODE=true
             shift
             ;;
+        --with-pr-status)
+            SKIP_PR_STATUS=false
+            shift
+            ;;
         *)
             echo -e "${RED}Error: Unknown option '$1'${NC}"
             echo "Use --help for usage information"
@@ -147,8 +154,9 @@ CREATED_ISSUES=$(gh issue list --author "@me" --limit 20 --json number,title,aut
 # Get PR information for each issue to add PR status indicators
 get_pr_status() {
     local issue_num="$1"
-    local pr_count=$(gh pr list --search "linked:$issue_num" --json number --jq 'length')
-    if [ "$pr_count" -gt 0 ]; then
+    # Add timeout to prevent hanging
+    local pr_count=$(timeout 5 gh pr list --search "linked:$issue_num" --json number --jq 'length' 2>/dev/null)
+    if [ $? -eq 0 ] && [ "$pr_count" -gt 0 ]; then
         echo "[has PR]"
     else
         echo ""
@@ -196,21 +204,34 @@ END {
     }
 }')
 
-# Add PR status to each issue
-ISSUES_WITH_PR_STATUS=""
-while IFS= read -r line; do
-    if [[ -n "$line" ]]; then
-        issue_num=$(echo "$line" | awk '{print $1}')
-        pr_status=$(get_pr_status "$issue_num")
-        # Remove the timestamp from the line and add PR status
-        clean_line=$(echo "$line" | sed -E 's/ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$//')
-        if [[ -n "$pr_status" ]]; then
-            ISSUES_WITH_PR_STATUS="${ISSUES_WITH_PR_STATUS}${clean_line} ${pr_status}\n"
-        else
+# Add PR status to each issue (opt-in for performance)
+if [[ "$SKIP_PR_STATUS" == true ]]; then
+    # Skip PR status checking for faster performance (default behavior)
+    ISSUES_WITH_PR_STATUS=""
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            # Remove the timestamp from the line
+            clean_line=$(echo "$line" | sed -E 's/ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$//')
             ISSUES_WITH_PR_STATUS="${ISSUES_WITH_PR_STATUS}${clean_line}\n"
         fi
-    fi
-done <<< "$COMBINED_ISSUES"
+    done <<< "$COMBINED_ISSUES"
+else
+    # Check PR status for each issue (opt-in, slower but more informative)
+    ISSUES_WITH_PR_STATUS=""
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            issue_num=$(echo "$line" | awk '{print $1}')
+            pr_status=$(get_pr_status "$issue_num")
+            # Remove the timestamp from the line and add PR status
+            clean_line=$(echo "$line" | sed -E 's/ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$//')
+            if [[ -n "$pr_status" ]]; then
+                ISSUES_WITH_PR_STATUS="${ISSUES_WITH_PR_STATUS}${clean_line} ${pr_status}\n"
+            else
+                ISSUES_WITH_PR_STATUS="${ISSUES_WITH_PR_STATUS}${clean_line}\n"
+            fi
+        fi
+    done <<< "$COMBINED_ISSUES"
+fi
 
 COMBINED_ISSUES=$(echo -e "$ISSUES_WITH_PR_STATUS" | sed '$d')  # Remove last empty line
 
