@@ -2,6 +2,7 @@
 
 # git-smart-switch - Enhanced branch switching with WIP management and commit movement
 # Usage: git smart-switch [<target-branch>] [OPTIONS]
+# Supports both interactive and automated workflows
 
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
@@ -40,6 +41,8 @@ usage() {
     echo -e "${YELLOW}Safety options:${NC}"
     echo "  --dry-run               Preview operations without executing them"
     echo "  --force                 Skip safety confirmations (use with caution)"
+    echo "  --json                  Output in JSON format (for automation)"
+    echo "  --yes                   Skip interactive confirmations (for automation)"
     echo ""
     echo -e "${YELLOW}Other options:${NC}"
     echo "  -h, --help              Show this help message"
@@ -67,6 +70,7 @@ usage() {
     echo -e "${GREEN}  git smart-switch correct-branch -m --dry-run${NC}  # Preview smart move without executing"
     echo -e "${GREEN}  git smart-switch stacked-feature -m${NC}   # Smart move: options include stacking if target has commits"
     echo -e "${GREEN}  git smart-switch target -w${NC}            # Move only working changes to target (source becomes clean)"
+    echo -e "${GREEN}  git smart-switch feature-branch --yes${NC}  # Non-interactive branch switch"
     exit 1
 }
 
@@ -160,12 +164,14 @@ move_working_state() {
         return 0
     fi
     
-    if [ "$force_mode" = false ]; then
+    if [ "$force_mode" = false ] && [ "$auto_confirm" = false ]; then
         read -p "Confirm move working state? (y/N): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             echo "Move operation cancelled"
             return 1
         fi
+    elif [ "$auto_confirm" = true ]; then
+        echo "Auto-confirming move working state operation"
     fi
     
     # Stash current changes
@@ -428,12 +434,14 @@ move_commits() {
     
     echo ""
     
-    if [ "$force_mode" = false ]; then
+    if [ "$force_mode" = false ] && [ "$auto_confirm" = false ]; then
         read -p "Confirm move operation? (y/N): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             echo "Move operation cancelled"
             return 1
         fi
+    elif [ "$auto_confirm" = true ]; then
+        echo "Auto-confirming move commits operation"
     fi
     
     # Create safety backup
@@ -657,6 +665,8 @@ move_working_mode=false
 move_commit=""
 dry_run=false
 force_mode=false
+json_output=false
+auto_confirm=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -688,6 +698,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --force)
             force_mode=true
+            shift
+            ;;
+        --json)
+            json_output=true
+            shift
+            ;;
+        --yes)
+            auto_confirm=true
             shift
             ;;
         -h|--help)
@@ -766,6 +784,17 @@ if [ "$move_mode" = true ]; then
     
     # Perform the move operation
     move_commits "$new_branch" "$move_commit"
+    exit 0
+fi
+
+# Handle JSON output for branch listing
+if [ "$json_output" = true ] && [ -z "$new_branch" ]; then
+    current_branch=$(git rev-parse --abbrev-ref HEAD)
+    branches=$(git branch --sort=-committerdate --format='%(refname:short)' | jq -R -s 'split("\n") | map(select(. != ""))')
+    echo "{"
+    echo "  \"current_branch\": \"$current_branch\","
+    echo "  \"branches\": $branches"
+    echo "}"
     exit 0
 fi
 

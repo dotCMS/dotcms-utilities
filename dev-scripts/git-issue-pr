@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # git-issue-pr - Create pull requests linked to GitHub issues
-# Usage: git issue-pr [--help]
+# Usage: git issue-pr [--help] [--type TYPE] [--scope SCOPE] [--title TITLE] [--body BODY] [--draft] [--yes]
+# Supports both interactive and automated workflows
 
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
@@ -15,6 +16,15 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+# Global variables for automation support
+JSON_OUTPUT=false
+AUTO_CONFIRM=false
+CUSTOM_TYPE=""
+CUSTOM_SCOPE=""
+CUSTOM_TITLE=""
+CUSTOM_BODY=""
+FORCE_DRAFT=false
 
 # Show help message
 show_help() {
@@ -40,10 +50,20 @@ show_help() {
     echo "  • Example: issue-123-fix-login-bug"
     echo ""
     echo -e "${YELLOW}Options:${NC}"
-    echo "  --help, -h    Show this help message"
+    echo "  --help, -h     Show this help message"
+    echo "  --type TYPE    Specify commit type (fix, feat, chore, refactor, docs, test, ci, build, perf, style, revert)"
+    echo "  --scope SCOPE  Specify commit scope (uve, core, graphql, sdk, etc. or custom)"
+    echo "  --title TITLE  Custom PR title (overrides generated title)"
+    echo "  --body BODY    Custom PR body (overrides template)"
+    echo "  --draft        Create PR as draft (WIP)"
+    echo "  --ready        Create PR as ready for review (default)"
+    echo "  --json         Output in JSON format (for automation)"
+    echo "  --yes, -y      Skip confirmation prompt (for automation)"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
-    echo "  git issue-pr          # Create PR for current branch"
+    echo "  git issue-pr          # Interactive PR creation"
+    echo "  git issue-pr --type fix --scope core --draft --yes  # Automated draft PR"
+    echo "  git issue-pr --title \"Custom PR Title\" --body \"Custom description\" --yes  # Fully automated PR"
 }
 
 # Parse command line arguments
@@ -52,6 +72,38 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             show_help
             exit 0
+            ;;
+        --type)
+            CUSTOM_TYPE="$2"
+            shift 2
+            ;;
+        --scope)
+            CUSTOM_SCOPE="$2"
+            shift 2
+            ;;
+        --title)
+            CUSTOM_TITLE="$2"
+            shift 2
+            ;;
+        --body)
+            CUSTOM_BODY="$2"
+            shift 2
+            ;;
+        --draft)
+            FORCE_DRAFT=true
+            shift
+            ;;
+        --ready)
+            FORCE_DRAFT=false
+            shift
+            ;;
+        --json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --yes|-y)
+            AUTO_CONFIRM=true
+            shift
             ;;
         *)
             echo -e "${RED}Error: Unknown option '$1'${NC}"
@@ -90,39 +142,58 @@ ISSUE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json title --jq '.title' | tr -cd 
 echo -e "${GREEN}Issue Title: $ISSUE_TITLE${NC}"
 echo "-------------------------------------------------"
 
-# Interactive selection for commit type and scope
-echo -e "${YELLOW}Select the type and scope of your changes:${NC}"
+# Commit type and scope selection
 COMMIT_TYPES=("fix" "feat" "chore" "refactor" "docs" "test" "ci" "build" "perf" "style" "revert" "NONE")
 COMMIT_SCOPES=("uve" "core" "graphql" "sdk" "examples" "ui" "backend" "api" "workflow" "template-selector" "sessions" "content-search" "content-drive" "block-editor" "apps" "deployment" "ci" "docs" "deps" "NONE" "CUSTOM")
 
-# Check if fzf is installed
-if command -v fzf &> /dev/null; then
-    FZF_AVAILABLE=1
+# Use custom values if provided, otherwise interactive selection
+if [[ -n "$CUSTOM_TYPE" ]]; then
+    SELECTED_TYPE="$CUSTOM_TYPE"
+    echo -e "${GREEN}Using specified type: $SELECTED_TYPE${NC}"
 else
-    FZF_AVAILABLE=0
-    echo -e "${YELLOW}fzf is not available, switching to manual selection.${NC}"
-fi
-if [ "$FZF_AVAILABLE" -eq 1 ]; then
-    SELECTED_TYPE=$(printf "%s\n" "${COMMIT_TYPES[@]}" | fzf --height=50% --reverse --prompt="Select commit type: ")
-    SELECTED_SCOPE=$(printf "%s\n" "${COMMIT_SCOPES[@]}" | fzf --height=50% --reverse --prompt="Select commit scope (or NONE for no scope): ")
-else
-    echo -e "${BLUE}Available commit types:${NC}"
-    for i in "${!COMMIT_TYPES[@]}"; do
-        echo "$((i+1)). ${COMMIT_TYPES[$i]}"
-    done
-    echo -e -n "${BLUE}Enter the number for the commit type:${NC} "
-    read -r type_num
-    SELECTED_TYPE=${COMMIT_TYPES[$((type_num-1))]}
-
-    echo -e "${BLUE}Available commit scopes:${NC}"
-    for i in "${!COMMIT_SCOPES[@]}"; do
-        echo "$((i+1)). ${COMMIT_SCOPES[$i]}"
-    done
-    echo -e -n "${BLUE}Enter the number for the commit scope (enter for NONE):${NC} "
-    read -r scope_num
-    if [ -n "$scope_num" ]; then
-        SELECTED_SCOPE=${COMMIT_SCOPES[$((scope_num-1))]}
+    echo -e "${YELLOW}Select the type and scope of your changes:${NC}"
+    # Check if fzf is installed
+    if command -v fzf &> /dev/null; then
+        FZF_AVAILABLE=1
     else
+        FZF_AVAILABLE=0
+        echo -e "${YELLOW}fzf is not available, switching to manual selection.${NC}"
+    fi
+    if [ "$FZF_AVAILABLE" -eq 1 ]; then
+        SELECTED_TYPE=$(printf "%s\n" "${COMMIT_TYPES[@]}" | fzf --height=50% --reverse --prompt="Select commit type: ")
+    else
+        echo -e "${BLUE}Available commit types:${NC}"
+        for i in "${!COMMIT_TYPES[@]}"; do
+            echo "$((i+1)). ${COMMIT_TYPES[$i]}"
+        done
+        echo -e -n "${BLUE}Enter the number for the commit type:${NC} "
+        read -r type_num
+        SELECTED_TYPE=${COMMIT_TYPES[$((type_num-1))]}
+    fi
+fi
+
+if [[ -n "$CUSTOM_SCOPE" ]]; then
+    SELECTED_SCOPE="$CUSTOM_SCOPE"
+    echo -e "${GREEN}Using specified scope: $SELECTED_SCOPE${NC}"
+else
+    if [[ -z "$CUSTOM_TYPE" ]]; then  # Only show scope selection if we showed type selection
+        if [ "$FZF_AVAILABLE" -eq 1 ]; then
+            SELECTED_SCOPE=$(printf "%s\n" "${COMMIT_SCOPES[@]}" | fzf --height=50% --reverse --prompt="Select commit scope (or NONE for no scope): ")
+        else
+            echo -e "${BLUE}Available commit scopes:${NC}"
+            for i in "${!COMMIT_SCOPES[@]}"; do
+                echo "$((i+1)). ${COMMIT_SCOPES[$i]}"
+            done
+            echo -e -n "${BLUE}Enter the number for the commit scope (enter for NONE):${NC} "
+            read -r scope_num
+            if [ -n "$scope_num" ]; then
+                SELECTED_SCOPE=${COMMIT_SCOPES[$((scope_num-1))]}
+            else
+                SELECTED_SCOPE="NONE"
+            fi
+        fi
+    else
+        # If type was specified via CLI, default scope to NONE
         SELECTED_SCOPE="NONE"
     fi
 fi
@@ -149,8 +220,13 @@ else
 fi
 
 # Construct the PR title with proper quoting and handling for special characters
-PR_TITLE="${SELECTED_TYPE}${SCOPE_PREFIX}${SELECTED_SCOPE}${SCOPE_SUFFIX}: ${ISSUE_TITLE} (#$ISSUE_NUMBER)"
-echo -e "${GREEN}Generated PR Title: $PR_TITLE${NC}"
+if [[ -n "$CUSTOM_TITLE" ]]; then
+    PR_TITLE="$CUSTOM_TITLE"
+    echo -e "${GREEN}Using custom PR title: $PR_TITLE${NC}"
+else
+    PR_TITLE="${SELECTED_TYPE}${SCOPE_PREFIX}${SELECTED_SCOPE}${SCOPE_SUFFIX}: ${ISSUE_TITLE} (#$ISSUE_NUMBER)"
+    echo -e "${GREEN}Generated PR Title: $PR_TITLE${NC}"
+fi
 echo "-------------------------------------------------"
 
 
@@ -223,23 +299,34 @@ fi
 PR_BODY_NO_HEADER=$(echo "$PR_BODY" | sed '/^---$/,/^---$/d')
 
 
-# Prepare the file for user editing
-echo -e "${BLUE}Please review the PR details in the editor. You can make additional changes as needed.${NC}"
-TEMP_PR_BODY_FILE=$(mktemp)
-echo -e "$PR_BODY_NO_HEADER" > "$TEMP_PR_BODY_FILE"
-${EDITOR:-vi} "$TEMP_PR_BODY_FILE"
-PR_BODY=$(cat "$TEMP_PR_BODY_FILE")
-rm "$TEMP_PR_BODY_FILE"
+# Use custom body if provided, otherwise use template/editor
+if [[ -n "$CUSTOM_BODY" ]]; then
+    PR_BODY="$CUSTOM_BODY"
+    echo -e "${GREEN}Using custom PR body${NC}"
+else
+    # Prepare the file for user editing
+    echo -e "${BLUE}Please review the PR details in the editor. You can make additional changes as needed.${NC}"
+    TEMP_PR_BODY_FILE=$(mktemp)
+    echo -e "$PR_BODY_NO_HEADER" > "$TEMP_PR_BODY_FILE"
+    ${EDITOR:-vi} "$TEMP_PR_BODY_FILE"
+    PR_BODY=$(cat "$TEMP_PR_BODY_FILE")
+    rm "$TEMP_PR_BODY_FILE"
+fi
 
 # Ask about WIP status
-echo -e -n "${BLUE}Create this PR as Work In Progress (WIP)? (Y/n):${NC} "
-read -r WIP_REPLY
 WIP_FLAG=""
-if [[ ! $WIP_REPLY =~ ^[Nn]$ ]]; then
+if [[ "$FORCE_DRAFT" == true ]]; then
     WIP_FLAG="--draft"
     echo -e "${YELLOW}PR will be created as a draft (WIP).${NC}"
 else
-    echo -e "${GREEN}PR will be created as ready for review.${NC}"
+    echo -e -n "${BLUE}Create this PR as Work In Progress (WIP)? (Y/n):${NC} "
+    read -r WIP_REPLY
+    if [[ ! $WIP_REPLY =~ ^[Nn]$ ]]; then
+        WIP_FLAG="--draft"
+        echo -e "${YELLOW}PR will be created as a draft (WIP).${NC}"
+    else
+        echo -e "${GREEN}PR will be created as ready for review.${NC}"
+    fi
 fi
 echo "-------------------------------------------------"
 
@@ -249,14 +336,26 @@ echo -e "${BLUE}Title:${NC} $PR_TITLE"
 echo -e "${BLUE}Body:${NC} $PR_BODY"
 echo -e "${BLUE}Status:${NC} $([ -n "$WIP_FLAG" ] && echo "Draft (WIP)" || echo "Ready for review")"
 echo "-------------------------------------------------"
-echo -e -n "${BLUE}Create the PR? (y/N):${NC} "
-read -r CREATE_PR_REPLY
+
+if [[ "$AUTO_CONFIRM" == true ]]; then
+    CREATE_PR_REPLY="y"
+    echo -e "${BLUE}Auto-confirming PR creation...${NC}"
+else
+    echo -e -n "${BLUE}Create the PR? (y/N):${NC} "
+    read -r CREATE_PR_REPLY
+fi
+
 if [[ $CREATE_PR_REPLY =~ ^[Yy]$ ]]; then
     # Create the pull request
-    gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG
-    echo -e "${GREEN}PR created successfully!${NC}"
-    if [ -n "$WIP_FLAG" ]; then
-        echo -e "${BLUE}Note: PR created as draft. Mark as ready for review when complete.${NC}"
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        PR_OUTPUT=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG --json number,url,title,state)
+        echo "$PR_OUTPUT"
+    else
+        gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG
+        echo -e "${GREEN}PR created successfully!${NC}"
+        if [ -n "$WIP_FLAG" ]; then
+            echo -e "${BLUE}Note: PR created as draft. Mark as ready for review when complete.${NC}"
+        fi
     fi
 else
     echo -e "${YELLOW}PR creation cancelled.${NC}"
