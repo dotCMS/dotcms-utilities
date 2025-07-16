@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # git-issue-create - Streamlined GitHub issue creation with team support
-# Usage: git issue-create [title] [--branch] [--team TEAM] [--type TYPE] [--priority PRIORITY]
+# Usage: git issue-create [title] [--branch] [--team TEAM] [--type TYPE] [--priority PRIORITY] [--json] [--list-*]
+# Supports both interactive and automated workflows with discovery commands and JSON output
 
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
@@ -39,6 +40,10 @@ PROJECT_ID="7"  # dotCMS - Product Planning V2
 PROJECT_STATUS="New"  # Default status for new issues
 PROJECT_EFFORT=""
 DRY_RUN=false
+JSON_OUTPUT=false
+LIST_MODE=""
+AUTO_CONFIRM=false
+EPIC_MODE=false
 
 # Track which values were set via command line
 CLI_TEAM_SET=false
@@ -688,6 +693,52 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --list-teams)
+            LIST_MODE="teams"
+            shift
+            ;;
+        --list-types)
+            LIST_MODE="types"
+            shift
+            ;;
+        --list-priorities)
+            LIST_MODE="priorities"
+            shift
+            ;;
+        --list-labels)
+            LIST_MODE="labels"
+            shift
+            ;;
+        --list-all)
+            LIST_MODE="all"
+            shift
+            ;;
+        --description)
+            DESCRIPTION="$2"
+            shift 2
+            ;;
+        --body)
+            BODY="$2"
+            shift 2
+            ;;
+        --effort)
+            PROJECT_EFFORT="$2"
+            shift 2
+            ;;
+        --yes|-y)
+            AUTO_CONFIRM=true
+            shift
+            ;;
+        --epic)
+            EPIC_MODE=true
+            TYPE="Epic"
+            CLI_TYPE_SET=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: git issue-create [title] [options]"
             echo ""
@@ -699,14 +750,31 @@ while [[ $# -gt 0 ]]; do
             echo "  --assignee USER    Assign issue to user"
             echo "  --repo, -r REPO    Repository to create issue in (owner/repo format)"
             echo "  --project ID       Project ID to add issue to"
+            echo "  --description TEXT Brief description for the issue"
+            echo "  --body TEXT        Full issue body (overrides default template)"
+            echo "  --effort NUMBER    Story points estimation"
+            echo "  --epic             Create as Epic (sets Epic type and label if available)"
+            echo "  --yes, -y          Skip confirmation prompt (for automation)"
             echo "  --refresh          Force refresh of cached labels and types"
             echo "  --dry-run          Show what would be created without actually creating the issue"
+            echo "  --json             Output in JSON format (for automation)"
+            echo "  --list-teams       List available teams for the repository"
+            echo "  --list-types       List available issue types for the organization"
+            echo "  --list-priorities  List available priorities for the repository"
+            echo "  --list-labels      List all available labels for the repository"
+            echo "  --list-all         List all discoverable options (teams, types, priorities, labels)"
             echo "  --help, -h         Show this help message"
             echo ""
             echo "Examples:"
             echo "  git issue-create \"Fix login bug\" --type Defect --priority \"2 High\""
             echo "  git issue-create \"Add new feature\" --branch --team CloudEng"
             echo "  git issue-create \"Update docs\" --repo dotCMS/core --team Platform"
+            echo "  git issue-create \"User Authentication Epic\" --epic --team Platform --yes"
+            echo ""
+            echo "Discovery commands for automation:"
+            echo "  git issue-create --list-teams --repo dotCMS/core --json"
+            echo "  git issue-create --list-all --repo dotCMS/dotcms-utilities --json"
+            echo "  git issue-create --list-types --json"
             exit 0
             ;;
         -*|--*)
@@ -725,12 +793,148 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Error handling for automation
+output_error() {
+    local message="$1"
+    local code="${2:-1}"
+    
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        echo "{"
+        echo "  \"error\": \"$message\","
+        echo "  \"code\": $code"
+        echo "}"
+    else
+        echo -e "${RED}Error: $message${NC}" >&2
+    fi
+    exit "$code"
+}
+
+output_validation_error() {
+    local field="$1"
+    local provided_value="$2"
+    local available_values="$3"
+    
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        echo "{"
+        echo "  \"error\": \"Invalid $field value\","
+        echo "  \"provided\": \"$provided_value\","
+        echo "  \"available\": $available_values"
+        echo "}"
+    else
+        echo -e "${RED}Error: Invalid $field value${NC}" >&2
+        echo -e "${RED}Provided: $provided_value${NC}" >&2
+        echo -e "${BLUE}Available options:${NC}" >&2
+        echo "$available_values" | jq -r '.[]' 2>/dev/null | sed 's/^/  - /' >&2
+    fi
+    exit 1
+}
+
+# Discovery functions for automation
+output_json_data() {
+    local data="$1"
+    local type="$2"
+    
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        echo "{"
+        echo "  \"type\": \"$type\","
+        echo "  \"data\": $data"
+        echo "}"
+    else
+        echo "$data" | jq -r '.[]' 2>/dev/null || echo "$data"
+    fi
+}
+
+handle_list_mode() {
+    local mode="$1"
+    
+    # Get repository if not specified
+    if [[ -z "$REPOSITORY" ]]; then
+        CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+        if [[ -n "$CURRENT_REPO" ]]; then
+            REPOSITORY="$CURRENT_REPO"
+        else
+            if [[ "$JSON_OUTPUT" == true ]]; then
+                echo "{\"error\": \"No repository specified and cannot determine current repository\"}"
+            else
+                echo "Error: No repository specified and cannot determine current repository"
+            fi
+            exit 1
+        fi
+    fi
+    
+    case "$mode" in
+        "teams")
+            AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+            teams=$(echo "$AVAILABLE_LABELS" | grep "^Team :" | jq -R -s 'split("\n") | map(select(. != ""))')
+            output_json_data "$teams" "teams"
+            ;;
+        "types")
+            ORG_NAME=$(echo "$REPOSITORY" | cut -d'/' -f1)
+            types=$(get_org_issue_types "$ORG_NAME" | jq -R -s 'split("\n") | map(select(. != ""))')
+            output_json_data "$types" "types"
+            ;;
+        "priorities")
+            AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+            priorities=$(echo "$AVAILABLE_LABELS" | grep "^Priority :" | jq -R -s 'split("\n") | map(select(. != ""))')
+            output_json_data "$priorities" "priorities"
+            ;;
+        "labels")
+            AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+            labels=$(echo "$AVAILABLE_LABELS" | jq -R -s 'split("\n") | map(select(. != ""))')
+            output_json_data "$labels" "labels"
+            ;;
+        "all")
+            AVAILABLE_LABELS=$(get_repo_labels "$REPOSITORY")
+            ORG_NAME=$(echo "$REPOSITORY" | cut -d'/' -f1)
+            
+            teams=$(echo "$AVAILABLE_LABELS" | grep "^Team :" | jq -R -s 'split("\n") | map(select(. != ""))')
+            types=$(get_org_issue_types "$ORG_NAME" | jq -R -s 'split("\n") | map(select(. != ""))')
+            priorities=$(echo "$AVAILABLE_LABELS" | grep "^Priority :" | jq -R -s 'split("\n") | map(select(. != ""))')
+            labels=$(echo "$AVAILABLE_LABELS" | jq -R -s 'split("\n") | map(select(. != ""))')
+            
+            if [[ "$JSON_OUTPUT" == true ]]; then
+                echo "{"
+                echo "  \"repository\": \"$REPOSITORY\","
+                echo "  \"teams\": $teams,"
+                echo "  \"types\": $types,"
+                echo "  \"priorities\": $priorities,"
+                echo "  \"labels\": $labels"
+                echo "}"
+            else
+                echo "Repository: $REPOSITORY"
+                echo "Teams:"
+                echo "$teams" | jq -r '.[]' 2>/dev/null | sed 's/^/  /'
+                echo "Types:"
+                echo "$types" | jq -r '.[]' 2>/dev/null | sed 's/^/  /'
+                echo "Priorities:"
+                echo "$priorities" | jq -r '.[]' 2>/dev/null | sed 's/^/  /'
+                echo "All Labels:"
+                echo "$labels" | jq -r '.[]' 2>/dev/null | sed 's/^/  /'
+            fi
+            ;;
+    esac
+    exit 0
+}
+
+# Handle discovery/list modes
+if [[ -n "$LIST_MODE" ]]; then
+    handle_list_mode "$LIST_MODE"
+fi
+
 # Load saved configuration
 load_config
 
 # Use saved defaults only for Team (and not overridden by command line)
 if [[ -n "$SAVED_TEAM" && "$CLI_TEAM_SET" != true ]]; then
     TEAM="$SAVED_TEAM"
+fi
+
+# Apply Epic mode transformations
+if [[ "$EPIC_MODE" == true && -n "$TITLE" ]]; then
+    # Add [Epic] prefix to title if not already present
+    if [[ ! "$TITLE" =~ ^\[Epic\] ]]; then
+        TITLE="[Epic] $TITLE"
+    fi
 fi
 
 # Start wizard if no title provided
@@ -752,8 +956,7 @@ echo -e "${BLUE}Enter the issue title:${NC}"
 read -r TITLE
 
 if [[ -z "$TITLE" ]]; then
-    echo -e "${RED}Error: Issue title is required${NC}"
-    exit 1
+    output_error "Issue title is required"
 fi
 echo ""
         
@@ -1023,6 +1226,15 @@ if [[ -n "$SELECTED_OKR_LABEL" ]]; then
     echo -e "${GREEN}✓ Will apply OKR label: $SELECTED_OKR_LABEL${NC}"
 fi
 
+# Add Epic label if in Epic mode
+if [[ "$EPIC_MODE" == true ]]; then
+    epic_label=$(find_label "$AVAILABLE_LABELS" "Epic")
+    if [[ -n "$epic_label" ]]; then
+        LABELS+=("$epic_label")
+        echo -e "${GREEN}✓ Will apply Epic label: $epic_label${NC}"
+    fi
+fi
+
 # Get optional labels (exclude the structured ones we already handle)
 if [[ -n "$AVAILABLE_LABELS" ]]; then
     # Filter out structured labels and automated/system labels to show only relevant optional ones
@@ -1214,8 +1426,7 @@ if [[ -z "$TITLE" ]]; then
 fi
 
     if [[ -z "$TITLE" ]]; then
-        echo -e "${RED}Error: Issue title is required${NC}"
-        exit 1
+        output_error "Issue title is required"
     fi
 fi
 
@@ -1309,14 +1520,8 @@ if [[ "$CLI_TEAM_SET" == true || "$CLI_PRIORITY_SET" == true || "$CLI_TYPE_SET" 
             if [[ "$CLI_TEAM_SET" == true ]]; then
                 team_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Team" "$TEAM")
                 if [[ -z "$team_label" ]]; then
-                    echo -e "${RED}Error: Team label not found in repository${NC}"
-                    echo -e "${RED}Specified: --team \"$TEAM\"${NC}"
-                    echo -e "${BLUE}Available team labels in $REPOSITORY:${NC}"
-                    echo "$AVAILABLE_LABELS" | grep "^Team :" | sed 's/^/  - /'
-                    if [[ $(echo "$AVAILABLE_LABELS" | grep "^Team :" | wc -l) -eq 0 ]]; then
-                        echo -e "${YELLOW}  (No team labels found in this repository)${NC}"
-                    fi
-                    exit 1
+                    available_teams=$(echo "$AVAILABLE_LABELS" | grep "^Team :" | jq -R -s 'split("\n") | map(select(. != ""))')
+                    output_validation_error "team" "$TEAM" "$available_teams"
                 fi
             fi
             
@@ -1324,14 +1529,8 @@ if [[ "$CLI_TEAM_SET" == true || "$CLI_PRIORITY_SET" == true || "$CLI_TYPE_SET" 
             if [[ "$CLI_PRIORITY_SET" == true ]]; then
                 priority_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Priority" "$PRIORITY")
                 if [[ -z "$priority_label" ]]; then
-                    echo -e "${RED}Error: Priority label not found in repository${NC}"
-                    echo -e "${RED}Specified: --priority \"$PRIORITY\"${NC}"
-                    echo -e "${BLUE}Available priority labels in $REPOSITORY:${NC}"
-                    echo "$AVAILABLE_LABELS" | grep "^Priority :" | sed 's/^/  - /'
-                    if [[ $(echo "$AVAILABLE_LABELS" | grep "^Priority :" | wc -l) -eq 0 ]]; then
-                        echo -e "${YELLOW}  (No priority labels found in this repository)${NC}"
-                    fi
-                    exit 1
+                    available_priorities=$(echo "$AVAILABLE_LABELS" | grep "^Priority :" | jq -R -s 'split("\n") | map(select(. != ""))')
+                    output_validation_error "priority" "$PRIORITY" "$available_priorities"
                 fi
             fi
         fi
@@ -1354,14 +1553,8 @@ if [[ "$CLI_TEAM_SET" == true || "$CLI_PRIORITY_SET" == true || "$CLI_TYPE_SET" 
             done <<< "$AVAILABLE_TYPES"
             
             if [[ "$type_found" != true ]]; then
-                echo -e "${RED}Error: Issue type not found in organization${NC}"
-                echo -e "${RED}Specified: --type \"$TYPE\"${NC}"
-                echo -e "${BLUE}Available issue types in $ORG_NAME organization:${NC}"
-                echo "$AVAILABLE_TYPES" | sed 's/^/  - /'
-                if [[ $(echo "$AVAILABLE_TYPES" | wc -l) -eq 0 ]]; then
-                    echo -e "${YELLOW}  (No custom issue types found in this organization)${NC}"
-                fi
-                exit 1
+                available_types=$(echo "$AVAILABLE_TYPES" | jq -R -s 'split("\n") | map(select(. != ""))')
+                output_validation_error "type" "$TYPE" "$available_types"
             fi
         fi
     fi
@@ -1389,6 +1582,14 @@ if [[ ${#LABELS[@]} -eq 0 ]]; then
             priority_label=$(find_label_by_prefix_value "$AVAILABLE_LABELS" "Priority" "$PRIORITY")
             if [[ -n "$priority_label" ]]; then
                 LABELS+=("$priority_label")
+            fi
+        fi
+        
+        # Apply Epic label if in Epic mode
+        if [[ "$EPIC_MODE" == true ]]; then
+            epic_label=$(find_label "$AVAILABLE_LABELS" "Epic")
+            if [[ -n "$epic_label" ]]; then
+                LABELS+=("$epic_label")
             fi
         fi
     fi
@@ -1485,8 +1686,13 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 echo ""
-echo -e "${BLUE}Confirm creation? (y/N):${NC}"
-read -r CONFIRM
+if [[ "$AUTO_CONFIRM" == true ]]; then
+    CONFIRM="y"
+    echo -e "${BLUE}Auto-confirming issue creation...${NC}"
+else
+    echo -e "${BLUE}Confirm creation? (y/N):${NC}"
+    read -r CONFIRM
+fi
 
 if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Creating issue with type '$TYPE'...${NC}"

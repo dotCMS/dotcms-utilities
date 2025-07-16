@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # git-issue-branch - Work with GitHub issues and create/switch branches
-# Usage: git issue-branch [--help]
+# Usage: git issue-branch [--help] [--json] [--list]
+# Supports both interactive and automated workflows with JSON output and issue discovery
 
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
@@ -15,6 +16,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+# Global variables for automation support
+JSON_OUTPUT=false
+LIST_MODE=false
 
 # Show help message
 show_help() {
@@ -36,9 +41,12 @@ show_help() {
     echo ""
     echo -e "${YELLOW}Options:${NC}"
     echo "  --help, -h    Show this help message"
+    echo "  --json        Output in JSON format (for automation)"
+    echo "  --list        List issues without interactive selection"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  git issue-branch          # Interactive issue and branch selection"
+    echo "  git issue-branch --list --json  # List issues in JSON format for automation"
     echo ""
     echo -e "${YELLOW}Branch Naming:${NC}"
     echo "  • Format: issue-{number}-{sanitized-title}"
@@ -111,6 +119,14 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             show_help
             exit 0
+            ;;
+        --json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --list)
+            LIST_MODE=true
+            shift
             ;;
         *)
             echo -e "${RED}Error: Unknown option '$1'${NC}"
@@ -197,6 +213,37 @@ while IFS= read -r line; do
 done <<< "$COMBINED_ISSUES"
 
 COMBINED_ISSUES=$(echo -e "$ISSUES_WITH_PR_STATUS" | sed '$d')  # Remove last empty line
+
+# Handle JSON output or list mode
+if [[ "$JSON_OUTPUT" == true || "$LIST_MODE" == true ]]; then
+    # Parse issues into JSON format
+    issues_json="["
+    first=true
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            issue_num=$(echo "$line" | awk '{print $1}')
+            issue_title=$(echo "$line" | sed -E 's/^[0-9]+ (.+) \[(assigned|created)\]( \[has PR\])?$/\1/')
+            issue_status=$(echo "$line" | sed -E 's/^[0-9]+ .+ \[([^]]+)\]( \[has PR\])?$/\1/')
+            has_pr=$(echo "$line" | grep -q "\[has PR\]" && echo "true" || echo "false")
+            
+            if [[ "$first" == true ]]; then
+                first=false
+            else
+                issues_json+=","
+            fi
+            
+            issues_json+="{\"number\":$issue_num,\"title\":\"$issue_title\",\"status\":\"$issue_status\",\"has_pr\":$has_pr}"
+        fi
+    done <<< "$COMBINED_ISSUES"
+    issues_json+="]"
+    
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        echo "$issues_json" | jq .
+    else
+        echo "$issues_json" | jq -r '.[] | "\(.number) \(.title) [\(.status)]" + (if .has_pr then " [has PR]" else "" end)'
+    fi
+    exit 0
+fi
 
 # Fetch and select the issue using fzf or select
 if command -v fzf >/dev/null 2>&1; then
