@@ -370,8 +370,10 @@ else
     SELECTED_TEMPLATE=""
 fi
 
-# Construct ISSUE_CONTENT
-ISSUE_CONTENT="Related to #$ISSUE_NUMBER (${ISSUE_TITLE})."
+# Construct ISSUE_CONTENT with proper GitHub linking
+ISSUE_CONTENT="Closes #$ISSUE_NUMBER
+
+**Issue:** ${ISSUE_TITLE}"
 
 # Prepare PR_BODY by replacing placeholder in the template or creating a new content
 if [ -n "$SELECTED_TEMPLATE" ]; then
@@ -399,8 +401,11 @@ PR_BODY_NO_HEADER=$(echo "$PR_BODY" | sed '/^---$/,/^---$/d')
 
 # Use custom body if provided, otherwise use template/editor
 if [[ -n "$CUSTOM_BODY" ]]; then
-    PR_BODY="$CUSTOM_BODY"
-    echo -e "${GREEN}Using custom PR body${NC}"
+    # Append issue linking to custom body
+    PR_BODY="$CUSTOM_BODY
+
+$ISSUE_CONTENT"
+    echo -e "${GREEN}Using custom PR body with issue linking${NC}"
 else
     # Prepare the file for user editing
     echo -e "${BLUE}Please review the PR details in the editor. You can make additional changes as needed.${NC}"
@@ -444,16 +449,33 @@ else
 fi
 
 if [[ $CREATE_PR_REPLY =~ ^[Yy]$ ]]; then
-    # Create the pull request
+    # Create the pull request with explicit issue linking
     if [[ "$JSON_OUTPUT" == true ]]; then
         PR_OUTPUT=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG --json number,url,title,state)
         echo "$PR_OUTPUT"
+        # Extract PR number for linking
+        PR_NUMBER=$(echo "$PR_OUTPUT" | jq -r '.number')
     else
-        gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG
+        PR_URL=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG)
         echo -e "${GREEN}PR created successfully!${NC}"
+        echo "$PR_URL"
         if [ -n "$WIP_FLAG" ]; then
             echo -e "${BLUE}Note: PR created as draft. Mark as ready for review when complete.${NC}"
         fi
+        # Extract PR number from URL for linking
+        PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]\+$')
+    fi
+    
+    # Explicitly link the PR to the issue using GitHub CLI
+    echo -e "${BLUE}Linking PR to issue #$ISSUE_NUMBER...${NC}"
+    if gh issue edit "$ISSUE_NUMBER" --add-label "has-pr" 2>/dev/null; then
+        echo -e "${GREEN}✓ Added 'has-pr' label to issue #$ISSUE_NUMBER${NC}"
+    fi
+    
+    # Create a comment on the issue to establish the link
+    LINK_COMMENT="This issue is being addressed in PR #$PR_NUMBER"
+    if gh issue comment "$ISSUE_NUMBER" --body "$LINK_COMMENT" 2>/dev/null; then
+        echo -e "${GREEN}✓ Linked issue #$ISSUE_NUMBER to PR #$PR_NUMBER${NC}"
     fi
 else
     echo -e "${YELLOW}PR creation cancelled.${NC}"
