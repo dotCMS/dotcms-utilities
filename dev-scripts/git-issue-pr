@@ -25,6 +25,8 @@ CUSTOM_SCOPE=""
 CUSTOM_TITLE=""
 CUSTOM_BODY=""
 FORCE_DRAFT=false
+MARK_DRAFT=false
+MARK_READY=false
 
 # Show help message
 show_help() {
@@ -57,6 +59,8 @@ show_help() {
     echo "  --body BODY    Custom PR body (overrides template)"
     echo "  --draft        Create PR as draft (WIP)"
     echo "  --ready        Create PR as ready for review (default)"
+    echo "  --mark-draft   Convert existing PR to draft state"
+    echo "  --mark-ready   Convert existing PR to ready for review"
     echo "  --json         Output in JSON format (for automation)"
     echo "  --yes, -y      Skip confirmation prompt (for automation)"
     echo ""
@@ -64,6 +68,8 @@ show_help() {
     echo "  git issue-pr          # Interactive PR creation"
     echo "  git issue-pr --type fix --scope core --draft --yes  # Automated draft PR"
     echo "  git issue-pr --title \"Custom PR Title\" --body \"Custom description\" --yes  # Fully automated PR"
+    echo "  git issue-pr --mark-ready --yes  # Convert existing PR to ready for review"
+    echo "  git issue-pr --mark-draft --yes  # Convert existing PR to draft state"
 }
 
 # Parse command line arguments
@@ -97,6 +103,14 @@ while [[ $# -gt 0 ]]; do
             FORCE_DRAFT=false
             shift
             ;;
+        --mark-draft)
+            MARK_DRAFT=true
+            shift
+            ;;
+        --mark-ready)
+            MARK_READY=true
+            shift
+            ;;
         --json)
             JSON_OUTPUT=true
             shift
@@ -112,6 +126,91 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Handle existing PR state changes
+if [[ "$MARK_DRAFT" == true || "$MARK_READY" == true ]]; then
+    # Check if both flags are set (conflicting)
+    if [[ "$MARK_DRAFT" == true && "$MARK_READY" == true ]]; then
+        echo -e "${RED}Error: Cannot specify both --mark-draft and --mark-ready${NC}"
+        exit 1
+    fi
+    
+    # Get current branch name and extract issue number
+    BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+    ISSUE_NUMBER=$(echo "$BRANCH_NAME" | grep -o -E '^[0-9]+|issue-([0-9]+)' | grep -o -E '[0-9]+')
+    
+    if [ -z "$ISSUE_NUMBER" ]; then
+        echo -e "${RED}Error: No issue number found in the current branch name ($BRANCH_NAME).${NC}"
+        echo -e "${BLUE}Ensure you are in the correct branch formatted like 'issue-123-your-feature'.${NC}"
+        exit 1
+    fi
+    
+    # Find PR associated with this issue/branch
+    PR_NUMBER=$(gh pr list --search "linked:$ISSUE_NUMBER" --json number --jq '.[0].number' 2>/dev/null)
+    
+    # If not found by linked search, try by branch name
+    if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+        PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' 2>/dev/null)
+    fi
+    
+    if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+        echo -e "${RED}Error: No PR found for issue #$ISSUE_NUMBER or branch $BRANCH_NAME${NC}"
+        echo -e "${BLUE}Create a PR first before trying to change its state.${NC}"
+        exit 1
+    fi
+    
+    # Get current PR state
+    PR_STATE=$(gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft')
+    
+    if [[ "$MARK_DRAFT" == true ]]; then
+        if [[ "$PR_STATE" == "true" ]]; then
+            echo -e "${YELLOW}PR #$PR_NUMBER is already in draft state${NC}"
+            exit 0
+        fi
+        
+        if [[ "$AUTO_CONFIRM" == true ]]; then
+            echo -e "${BLUE}Auto-confirming conversion to draft state...${NC}"
+        else
+            echo -e "${YELLOW}Convert PR #$PR_NUMBER to draft state? (y/N):${NC}"
+            read -r confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                echo -e "${YELLOW}Operation cancelled${NC}"
+                exit 0
+            fi
+        fi
+        
+        gh pr ready "$PR_NUMBER" --undo
+        echo -e "${GREEN}✓ PR #$PR_NUMBER converted to draft state${NC}"
+        
+    elif [[ "$MARK_READY" == true ]]; then
+        if [[ "$PR_STATE" == "false" ]]; then
+            echo -e "${YELLOW}PR #$PR_NUMBER is already ready for review${NC}"
+            exit 0
+        fi
+        
+        if [[ "$AUTO_CONFIRM" == true ]]; then
+            echo -e "${BLUE}Auto-confirming conversion to ready for review...${NC}"
+        else
+            echo -e "${YELLOW}Mark PR #$PR_NUMBER as ready for review? (y/N):${NC}"
+            read -r confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                echo -e "${YELLOW}Operation cancelled${NC}"
+                exit 0
+            fi
+        fi
+        
+        gh pr ready "$PR_NUMBER"
+        echo -e "${GREEN}✓ PR #$PR_NUMBER marked as ready for review${NC}"
+    fi
+    
+    # Output JSON if requested
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        gh pr view "$PR_NUMBER" --json number,url,title,state,isDraft
+    fi
+    
+    exit 0
+fi
+
 # Enhanced user interaction and feedback
 echo -e "${BLUE}Fetching current branch and issue information...${NC}"
 echo "-------------------------------------------------"
