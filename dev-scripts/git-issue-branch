@@ -21,6 +21,10 @@ NC='\033[0m' # No Color
 JSON_OUTPUT=false
 LIST_MODE=false
 SKIP_PR_STATUS=true  # Default to skipping PR status for better performance
+SPECIFIC_ISSUE=""
+BRANCH_FROM_CURRENT=false
+AUTO_CONFIRM=false
+DRY_RUN=false
 
 # Show help message
 show_help() {
@@ -44,11 +48,19 @@ show_help() {
     echo "  --help, -h    Show this help message"
     echo "  --json        Output in JSON format (for automation)"
     echo "  --list        List issues without interactive selection"
+    echo "  --issue NUMBER  Work with specific issue number (for automation)"
+    echo "  --from-current  Create branch from current working state (for automation)"
+    echo "  --dry-run     Preview operations without executing them"
+    echo "  --yes, -y     Skip confirmation prompts (for automation)"
     echo "  --with-pr-status  Include PR status indicators (slower but more informative)"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  git issue-branch          # Interactive issue and branch selection (fast)"
     echo "  git issue-branch --list --json  # List issues in JSON format for automation"
+    echo "  git issue-branch --issue 30  # Work with specific issue number"
+    echo "  git issue-branch --issue 30 --json  # Get specific issue info in JSON format"
+    echo "  git issue-branch --issue 30 --from-current --yes  # Create branch from current state, skip prompts"
+    echo "  git issue-branch --issue 30 --dry-run  # Preview branch creation without executing"
     echo "  git issue-branch --with-pr-status  # Include PR status indicators (slower)"
     echo ""
     echo -e "${YELLOW}Branch Naming:${NC}"
@@ -125,15 +137,25 @@ while [[ $# -gt 0 ]]; do
             ;;
         --json)
             JSON_OUTPUT=true
-            shift
             ;;
         --list)
             LIST_MODE=true
+            ;;
+        --issue)
+            SPECIFIC_ISSUE="$2"
             shift
+            ;;
+        --from-current)
+            BRANCH_FROM_CURRENT=true
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        --yes|-y)
+            AUTO_CONFIRM=true
             ;;
         --with-pr-status)
             SKIP_PR_STATUS=false
-            shift
             ;;
         *)
             echo -e "${RED}Error: Unknown option '$1'${NC}"
@@ -235,8 +257,65 @@ fi
 
 COMBINED_ISSUES=$(echo -e "$ISSUES_WITH_PR_STATUS" | sed '$d')  # Remove last empty line
 
-# Handle JSON output or list mode
-if [[ "$JSON_OUTPUT" == true || "$LIST_MODE" == true ]]; then
+# Handle specific issue parameter first
+if [[ -n "$SPECIFIC_ISSUE" ]]; then
+    # Validate issue number format
+    if [[ ! "$SPECIFIC_ISSUE" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Issue number must be a positive integer${NC}"
+        echo "Provided: $SPECIFIC_ISSUE"
+        exit 1
+    fi
+    
+    # Fetch the issue directly from GitHub
+    echo -e "${BLUE}Fetching issue #$SPECIFIC_ISSUE...${NC}"
+    issue_data=$(gh issue view "$SPECIFIC_ISSUE" --json number,title,author,state 2>/dev/null)
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}Error: Could not find issue #$SPECIFIC_ISSUE${NC}"
+        echo "Make sure the issue number is correct and you have access to it."
+        exit 1
+    fi
+    
+    # Extract issue details
+    issue_title=$(echo "$issue_data" | jq -r '.title')
+    issue_author=$(echo "$issue_data" | jq -r '.author.login')
+    issue_state=$(echo "$issue_data" | jq -r '.state')
+    
+    # Check if issue is open
+    if [[ "$issue_state" != "OPEN" ]]; then
+        echo -e "${YELLOW}Warning: Issue #$SPECIFIC_ISSUE is $issue_state${NC}"
+    fi
+    
+    # Determine issue status relative to current user
+    if [[ "$issue_author" == "$CURRENT_USER" ]]; then
+        issue_status="created"
+    else
+        issue_status="other"
+    fi
+    
+    # Add PR status if requested
+    if [[ "$SKIP_PR_STATUS" == false ]]; then
+        pr_status=$(get_pr_status "$SPECIFIC_ISSUE")
+        if [[ -n "$pr_status" ]]; then
+            SELECTED_ISSUE="$SPECIFIC_ISSUE $issue_title [$issue_status] $pr_status"
+        else
+            SELECTED_ISSUE="$SPECIFIC_ISSUE $issue_title [$issue_status]"
+        fi
+    else
+        SELECTED_ISSUE="$SPECIFIC_ISSUE $issue_title [$issue_status]"
+    fi
+    
+    echo -e "${GREEN}✓ Found issue #$SPECIFIC_ISSUE: $issue_title${NC}"
+    
+    # Handle JSON output for specific issue
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        has_pr=$(echo "$SELECTED_ISSUE" | grep -q "\[has PR\]" && echo "true" || echo "false")
+        echo "{\"number\":$SPECIFIC_ISSUE,\"title\":\"$issue_title\",\"status\":\"$issue_status\",\"has_pr\":$has_pr}"
+        exit 0
+    fi
+    
+    # Skip to branch creation since we have the specific issue
+    # (Don't execute the interactive selection below)
+elif [[ "$JSON_OUTPUT" == true || "$LIST_MODE" == true ]]; then
     # Parse issues into JSON format
     issues_json="["
     first=true
@@ -264,39 +343,54 @@ if [[ "$JSON_OUTPUT" == true || "$LIST_MODE" == true ]]; then
         echo "$issues_json" | jq -r '.[] | "\(.number) \(.title) [\(.status)]" + (if .has_pr then " [has PR]" else "" end)'
     fi
     exit 0
-fi
-
-# Fetch and select the issue using fzf or select
-if command -v fzf >/dev/null 2>&1; then
-    SELECTED_ISSUE=$(echo "$COMBINED_ISSUES" | fzf --height 50% --reverse --header "Select an issue (assigned to you or recently created by you)")
 else
-    echo -e "${YELLOW}fzf is not installed, using select for issue choice.${NC}"
-    echo -e "${BLUE}Issues assigned to you or recently created by you:${NC}"
-    PS3="Select an issue: "
-    select issue_option in $COMBINED_ISSUES; do
-        SELECTED_ISSUE=$issue_option
-        break
-    done
+    # Interactive selection for general use
+    if command -v fzf >/dev/null 2>&1; then
+        SELECTED_ISSUE=$(echo "$COMBINED_ISSUES" | fzf --height 50% --reverse --header "Select an issue (assigned to you or recently created by you)")
+    else
+        echo -e "${YELLOW}fzf is not installed, using select for issue choice.${NC}"
+        echo -e "${BLUE}Issues assigned to you or recently created by you:${NC}"
+        PS3="Select an issue: "
+        select issue_option in $COMBINED_ISSUES; do
+            SELECTED_ISSUE=$issue_option
+            break
+        done
+    fi
 fi
 
-# Extract issue number and title (removing the [assigned] or [created] and [has PR] tags)
+# Extract issue number and title (removing the [assigned], [created], or [other] and [has PR] tags)
 ISSUE_NUMBER=$(echo "$SELECTED_ISSUE" | awk '{print $1}')
-ISSUE_TITLE=$(echo "$SELECTED_ISSUE" | sed -E 's/^[0-9]+ (.+) \[(assigned|created)\]( \[has PR\])?$/\1/')
+ISSUE_TITLE=$(echo "$SELECTED_ISSUE" | sed -E 's/^[0-9]+ (.+) \[(assigned|created|other)\]( \[has PR\])?$/\1/')
 
-# Check current branch and offer branch creation options
+# Check current branch and determine branch creation options
 CURRENT_BRANCH=$(git branch --show-current)
 echo ""
 echo -e "${BLUE}Current branch:${NC} ${GREEN}$CURRENT_BRANCH${NC}"
 echo ""
-echo -e "${YELLOW}Choose how to create your new branch:${NC}"
-echo -e "${BLUE}1.${NC} Create clean branch from main/master (default)"
-echo -e "${BLUE}2.${NC} Create branch based on current working state"
-echo -e -n "${BLUE}Select option (1-2) [1]:${NC} "
-read BRANCH_CHOICE
 
-# Default to option 1 if no choice is made
-if [[ -z "$BRANCH_CHOICE" ]]; then
+# Handle automation parameters
+if [[ "$BRANCH_FROM_CURRENT" == true ]]; then
+    BRANCH_CHOICE=2
+    echo -e "${YELLOW}Using --from-current: Creating branch based on current working state${NC}"
+elif [[ "$AUTO_CONFIRM" == true ]]; then
     BRANCH_CHOICE=1
+    echo -e "${YELLOW}Using --yes: Creating clean branch from main/master${NC}"
+elif [[ "$DRY_RUN" == true ]]; then
+    # Dry-run requires explicit choice via --from-current or --yes
+    echo -e "${RED}Error: --dry-run requires either --from-current or --yes to specify branch creation method${NC}"
+    echo -e "${BLUE}Use: --dry-run --yes (for clean branch) or --dry-run --from-current (for current state branch)${NC}"
+    exit 1
+else
+    echo -e "${YELLOW}Choose how to create your new branch:${NC}"
+    echo -e "${BLUE}1.${NC} Create clean branch from main/master (default)"
+    echo -e "${BLUE}2.${NC} Create branch based on current working state"
+    echo -e -n "${BLUE}Select option (1-2) [1]:${NC} "
+    read BRANCH_CHOICE
+    
+    # Default to option 1 if no choice is made
+    if [[ -z "$BRANCH_CHOICE" ]]; then
+        BRANCH_CHOICE=1
+    fi
 fi
 
 case $BRANCH_CHOICE in
@@ -304,9 +398,15 @@ case $BRANCH_CHOICE in
         # Create branch based on current state
         echo -e "${YELLOW}Creating branch based on current working state...${NC}"
         
-        # Prompt for custom branch suffix
-        echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default based on issue title):${NC} "
-        read CUSTOM_SUFFIX
+        # Handle custom suffix for automation
+        if [[ "$AUTO_CONFIRM" == true ]]; then
+            CUSTOM_SUFFIX=""
+            echo -e "${YELLOW}Using --yes: Using default branch suffix based on issue title${NC}"
+        else
+            # Prompt for custom branch suffix
+            echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default based on issue title):${NC} "
+            read CUSTOM_SUFFIX
+        fi
         
         # Decide which suffix to use and sanitize it
         if [ -n "$CUSTOM_SUFFIX" ]; then
@@ -321,47 +421,66 @@ case $BRANCH_CHOICE in
         if git show-ref --verify --quiet refs/heads/"$NEW_BRANCH_NAME"; then
             echo -e "${YELLOW}Branch '$NEW_BRANCH_NAME' already exists!${NC}"
             
-            # Offer options for handling existing branch
-            echo -e "${BLUE}What would you like to do?${NC}"
-            echo -e "${BLUE}1.${NC} Add a number suffix (e.g., ${NEW_BRANCH_NAME}-2)"
-            echo -e "${BLUE}2.${NC} Enter a different suffix"
-            echo -e "${BLUE}3.${NC} Cancel and create clean branch instead"
-            echo -e -n "${BLUE}Select option (1-3):${NC} "
-            read CONFLICT_CHOICE
-            
-            case $CONFLICT_CHOICE in
-                1)
-                    # Find next available number suffix
-                    counter=2
-                    while git show-ref --verify --quiet refs/heads/"${NEW_BRANCH_NAME}-${counter}"; do
-                        ((counter++))
-                    done
-                    NEW_BRANCH_NAME="${NEW_BRANCH_NAME}-${counter}"
-                    ;;
-                2)
-                    echo -e -n "${BLUE}Enter a different suffix:${NC} "
-                    read NEW_CUSTOM_SUFFIX
-                    sanitized_suffix=$(sanitize_title "$NEW_CUSTOM_SUFFIX")
-                    NEW_BRANCH_NAME="issue-${ISSUE_NUMBER}-${sanitized_suffix}"
-                    ;;
-                3)
-                    echo -e "${YELLOW}Creating clean branch instead...${NC}"
-                    BRANCH_CHOICE=1
-                    ;;
-            esac
+            # Handle conflict resolution for automation
+            if [[ "$AUTO_CONFIRM" == true || "$DRY_RUN" == true ]]; then
+                # Find next available number suffix automatically
+                counter=2
+                while git show-ref --verify --quiet refs/heads/"${NEW_BRANCH_NAME}-${counter}"; do
+                    ((counter++))
+                done
+                NEW_BRANCH_NAME="${NEW_BRANCH_NAME}-${counter}"
+                echo -e "${YELLOW}Using automation: Adding number suffix -> ${NEW_BRANCH_NAME}${NC}"
+            else
+                # Offer options for handling existing branch
+                echo -e "${BLUE}What would you like to do?${NC}"
+                echo -e "${BLUE}1.${NC} Add a number suffix (e.g., ${NEW_BRANCH_NAME}-2)"
+                echo -e "${BLUE}2.${NC} Enter a different suffix"
+                echo -e "${BLUE}3.${NC} Cancel and create clean branch instead"
+                echo -e -n "${BLUE}Select option (1-3):${NC} "
+                read CONFLICT_CHOICE
+                
+                case $CONFLICT_CHOICE in
+                    1)
+                        # Find next available number suffix
+                        counter=2
+                        while git show-ref --verify --quiet refs/heads/"${NEW_BRANCH_NAME}-${counter}"; do
+                            ((counter++))
+                        done
+                        NEW_BRANCH_NAME="${NEW_BRANCH_NAME}-${counter}"
+                        ;;
+                    2)
+                        echo -e -n "${BLUE}Enter a different suffix:${NC} "
+                        read NEW_CUSTOM_SUFFIX
+                        sanitized_suffix=$(sanitize_title "$NEW_CUSTOM_SUFFIX")
+                        NEW_BRANCH_NAME="issue-${ISSUE_NUMBER}-${sanitized_suffix}"
+                        ;;
+                    3)
+                        echo -e "${YELLOW}Creating clean branch instead...${NC}"
+                        BRANCH_CHOICE=1
+                        ;;
+                esac
+            fi
         fi
         
         # Create branch from current state if we have a valid new name
         if [[ -n "$NEW_BRANCH_NAME" && "$BRANCH_CHOICE" == "2" ]]; then
-            echo -e "${YELLOW}Creating branch '$NEW_BRANCH_NAME' from current state${NC}"
-            git smart-switch "$NEW_BRANCH_NAME" --keep
-            
-            # Link the new branch to the issue
-            gh issue develop "$ISSUE_NUMBER" --name "$NEW_BRANCH_NAME"
-            
-            echo -e "${GREEN}✓ Branch created and linked to issue #${ISSUE_NUMBER}${NC}"
-            echo -e "${BLUE}Your current working state has been preserved in the new branch.${NC}"
-            exit 0
+            if [[ "$DRY_RUN" == true ]]; then
+                echo -e "${YELLOW}[DRY RUN] Would create branch '$NEW_BRANCH_NAME' from current state${NC}"
+                echo -e "${YELLOW}[DRY RUN] Would run: git smart-switch \"$NEW_BRANCH_NAME\" --keep${NC}"
+                echo -e "${YELLOW}[DRY RUN] Would run: gh issue develop \"$ISSUE_NUMBER\" --name \"$NEW_BRANCH_NAME\"${NC}"
+                echo -e "${YELLOW}[DRY RUN] Would link branch to issue #${ISSUE_NUMBER}${NC}"
+                exit 0
+            else
+                echo -e "${YELLOW}Creating branch '$NEW_BRANCH_NAME' from current state${NC}"
+                git smart-switch "$NEW_BRANCH_NAME" --keep
+                
+                # Link the new branch to the issue
+                gh issue develop "$ISSUE_NUMBER" --name "$NEW_BRANCH_NAME"
+                
+                echo -e "${GREEN}✓ Branch created and linked to issue #${ISSUE_NUMBER}${NC}"
+                echo -e "${BLUE}Your current working state has been preserved in the new branch.${NC}"
+                exit 0
+            fi
         fi
         ;;
 esac
@@ -370,38 +489,84 @@ esac
 echo -e "${YELLOW}Creating clean branch from main/master...${NC}"
 echo ""
 
-# Fetch updates from upstream
-echo -e "${BLUE}Fetching updates from remote...${NC}"
-git fetch
+# Dry-run check for git fetch
+if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${YELLOW}[DRY RUN] Would fetch updates from remote...${NC}"
+    echo -e "${YELLOW}[DRY RUN] Would run: git fetch${NC}"
+else
+    # Fetch updates from upstream
+    echo -e "${BLUE}Fetching updates from remote...${NC}"
+    git fetch
+fi
 
 # Check for linked branches
 LINKED_BRANCHES=$(gh issue develop "$ISSUE_NUMBER" -l)
 if [[ -z "$LINKED_BRANCHES" ]]; then
-    # Prompt user for custom branch suffix if there are no linked branches or they want to create a new one
-    echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default):${NC} "
-    read CUSTOM_SUFFIX
-    create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
+    # Handle custom branch suffix for automation
+    if [[ "$AUTO_CONFIRM" == true ]]; then
+        CUSTOM_SUFFIX=""
+        echo -e "${YELLOW}Using --yes: Using default branch suffix${NC}"
+    else
+        # Prompt user for custom branch suffix if there are no linked branches or they want to create a new one
+        echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default):${NC} "
+        read CUSTOM_SUFFIX
+    fi
+    
+    # Handle dry-run for branch creation
+    if [[ "$DRY_RUN" == true ]]; then
+        echo -e "${YELLOW}[DRY RUN] Would create and switch to branch for issue #$ISSUE_NUMBER${NC}"
+        echo -e "${YELLOW}[DRY RUN] Would call: create_and_switch_branch \"$ISSUE_NUMBER\" \"$ISSUE_TITLE\" \"$CUSTOM_SUFFIX\"${NC}"
+        exit 0
+    else
+        create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
+    fi
 else
     # Linked branches exist, offer them for selection
-    echo -e "${BLUE}Linked branches found. Choose a branch to checkout or CREATE NEW BRANCH:${NC}"
-    if command -v fzf >/dev/null 2>&1; then
-        SELECTED_BRANCH=$(echo -e "CREATE NEW BRANCH\n$LINKED_BRANCHES" | fzf --height 50% --reverse | awk '{print $1}')
+    if [[ "$AUTO_CONFIRM" == true ]]; then
+        # In automation mode, default to creating new branch
+        SELECTED_BRANCH="CREATE NEW BRANCH"
+        echo -e "${YELLOW}Using --yes: Creating new branch instead of selecting existing${NC}"
     else
-        select branch_option in "CREATE NEW BRANCH" $LINKED_BRANCHES; do
-            SELECTED_BRANCH=$(echo "$branch_option" | awk '{print $1}')
-            break
-        done
+        echo -e "${BLUE}Linked branches found. Choose a branch to checkout or CREATE NEW BRANCH:${NC}"
+        if command -v fzf >/dev/null 2>&1; then
+            SELECTED_BRANCH=$(echo -e "CREATE NEW BRANCH\n$LINKED_BRANCHES" | fzf --height 50% --reverse | awk '{print $1}')
+        else
+            select branch_option in "CREATE NEW BRANCH" $LINKED_BRANCHES; do
+                SELECTED_BRANCH=$(echo "$branch_option" | awk '{print $1}')
+                break
+            done
+        fi
     fi
 
     # Handle branch selection
     if [[ "$SELECTED_BRANCH" == "CREATE NEW BRANCH" ]]; then
-        # Prompt for custom branch suffix
-        echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default):${NC} "
-        read CUSTOM_SUFFIX
-        create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
+        # Handle custom branch suffix for automation
+        if [[ "$AUTO_CONFIRM" == true ]]; then
+            CUSTOM_SUFFIX=""
+            echo -e "${YELLOW}Using --yes: Using default branch suffix${NC}"
+        else
+            # Prompt for custom branch suffix
+            echo -e -n "${BLUE}Enter custom branch suffix (press Enter to use the default):${NC} "
+            read CUSTOM_SUFFIX
+        fi
+        
+        # Handle dry-run for branch creation
+        if [[ "$DRY_RUN" == true ]]; then
+            echo -e "${YELLOW}[DRY RUN] Would create and switch to branch for issue #$ISSUE_NUMBER${NC}"
+            echo -e "${YELLOW}[DRY RUN] Would call: create_and_switch_branch \"$ISSUE_NUMBER\" \"$ISSUE_TITLE\" \"$CUSTOM_SUFFIX\"${NC}"
+            exit 0
+        else
+            create_and_switch_branch "$ISSUE_NUMBER" "$ISSUE_TITLE" "$CUSTOM_SUFFIX"
+        fi
     elif [[ -n "$SELECTED_BRANCH" ]]; then
         # Existing branch selected, checkout
-        echo -e "${YELLOW}Switching to the existing branch: $SELECTED_BRANCH.${NC}"
-        git smart-switch "$SELECTED_BRANCH"
+        if [[ "$DRY_RUN" == true ]]; then
+            echo -e "${YELLOW}[DRY RUN] Would switch to existing branch: $SELECTED_BRANCH${NC}"
+            echo -e "${YELLOW}[DRY RUN] Would run: git smart-switch \"$SELECTED_BRANCH\"${NC}"
+            exit 0
+        else
+            echo -e "${YELLOW}Switching to the existing branch: $SELECTED_BRANCH.${NC}"
+            git smart-switch "$SELECTED_BRANCH"
+        fi
     fi
 fi
