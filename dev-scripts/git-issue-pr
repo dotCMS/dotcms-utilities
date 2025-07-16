@@ -111,7 +111,6 @@ while [[ $# -gt 0 ]]; do
             exit 1
             ;;
     esac
-    shift
 done
 # Enhanced user interaction and feedback
 echo -e "${BLUE}Fetching current branch and issue information...${NC}"
@@ -193,7 +192,7 @@ else
             fi
         fi
     else
-        # If type was specified via CLI, default scope to NONE
+        # If type was specified via CLI but no scope, default to NONE
         SELECTED_SCOPE="NONE"
     fi
 fi
