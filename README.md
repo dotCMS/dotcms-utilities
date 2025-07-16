@@ -71,6 +71,28 @@ bash <(curl -fsSL https://raw.githubusercontent.com/dotcms/dotcms-utilities/main
 
 ## Git Extensions
 
+All Git extensions follow the standard Git plugin naming convention and can be invoked in two ways:
+
+### Command Invocation Formats
+
+**Git Subcommand Format** (recommended for normal use):
+```bash
+git issue-create    # Calls git-issue-create
+git issue-branch    # Calls git-issue-branch  
+git issue-pr        # Calls git-issue-pr
+git smart-switch    # Calls git-smart-switch
+```
+
+**Direct Script Format** (required for help documentation):
+```bash
+git-issue-create --help    # Shows detailed help
+git-issue-branch --help    # Shows detailed help
+git-issue-pr --help        # Shows detailed help
+git-smart-switch --help    # Shows detailed help
+```
+
+**Important**: Use the hyphenated format (`git-*`) to access help documentation and automation features. The space format (`git *`) is for interactive use.
+
 ### Issue Creation and Management
 
 #### Git Issue Create
@@ -87,6 +109,8 @@ The `git issue-create` extension provides a comprehensive GitHub issue creation 
 - **🔗 Branch Integration**: Optionally create and switch to working branch
 - **📋 Project Support**: Integration with dotCMS - Product Planning project
 - **⚡ Performance**: 24-hour caching for labels and issue types
+- **🤖 Automation-Friendly**: Full CLI parameter support with JSON output and discovery commands
+- **🏷️ Epic Support**: Create Epic issues with automatic labeling and title prefixing
 
 **Usage:**
 
@@ -102,6 +126,12 @@ git issue-create "Update API docs" --repo dotCMS/core --team Platform
 
 # Preview before creating
 git issue-create "Add new feature" --dry-run --team Platform
+
+# Epic creation with automated labeling
+git issue-create "User Authentication System" --epic --team Platform --yes
+
+# Automation-friendly with JSON output
+git-issue-create "API Enhancement" --type Enhancement --team Platform --json --yes
 ```
 
 **Command Options:**
@@ -114,6 +144,18 @@ git issue-create "Add new feature" --dry-run --team Platform
 - `--project ID` - Add to specified project
 - `--dry-run` - Preview what would be created without actually creating the issue
 - `--refresh` - Force refresh of cached labels and types
+- `--epic` - Create as Epic issue (adds Epic label and [Epic] title prefix)
+- `--description TEXT` - Set issue description/body
+- `--effort SIZE` - Set story point estimation (XS, S, M, L, XL)
+- `--json` - Output in JSON format (for automation)
+- `--yes, -y` - Skip confirmation prompts (for automation)
+
+**Discovery Commands** (for automation):
+- `--list-teams` - List available teams
+- `--list-types` - List available issue types  
+- `--list-priorities` - List available priorities
+- `--list-labels` - List all repository labels
+- `--list-all` - List all available options
 
 #### Git Issue Branch
 
@@ -126,6 +168,7 @@ The `git issue-branch` extension helps you work with existing issues:
 - **⏱️ Recent Focus**: Shows your 20 most recent created issues
 - **🔗 Branch Linking**: Integrates with `gh issue develop` for proper issue-branch linking
 - **🏷️ Smart Branch Renaming**: Detects non-standard branch names and offers to rename them to proper `issue-{number}-{suffix}` format
+- **🤖 Automation Support**: JSON output and list mode for automation workflows
 
 **Branch Renaming Feature:**
 When you're on a branch that doesn't follow the `issue-{number}-` naming convention, the tool will:
@@ -138,8 +181,19 @@ When you're on a branch that doesn't follow the `issue-{number}-` naming convent
 **Usage:**
 
 ```bash
+# Interactive issue selection
 git issue-branch
+
+# List issues in JSON format (for automation)
+git-issue-branch --list --json
+
+# List issues in human-readable format
+git-issue-branch --list
 ```
+
+**Command Options:**
+- `--json` - Output in JSON format (for automation)
+- `--list` - List issues without interactive selection
 
 **Example Workflow:**
 ```bash
@@ -155,29 +209,95 @@ git issue-branch
 
 #### Git Smart-Switch
 
-The `git smart-switch` extension enhances branch switching and creation with features like:
-- Interactive branch selection
-- WIP commit management
-- Optional remote branch pushing
+The `git smart-switch` extension enhances branch switching and creation with advanced features:
+
+**Enhanced Features:**
+- **🔍 Interactive Branch Selection**: Fuzzy-find branches with fzf or fallback menu
+- **💾 WIP Commit Management**: Automatic working state preservation
+- **📤 Remote Branch Pushing**: Optional remote branch pushing with `-p` flag
+- **🔄 Smart Commit Movement**: Advanced commit moving with multiple rebase strategies
+- **⚡ Working State Transfer**: Move only working changes between branches
+- **🤖 Automation Support**: JSON output and auto-confirmation for automation
+- **🔒 Safety Features**: Backup creation and conflict resolution guidance
 
 **Usage:**
 
 ```bash
-git smart-switch [<new-branch-name>] [-p|--push]
+# Interactive branch switching
+git smart-switch
+
+# Create/switch to specific branch
+git smart-switch feature-branch
+
+# Create branch with current state preserved
+git smart-switch new-branch --keep
+
+# Move commits with interactive strategy selection
+git smart-switch target-branch --move
+
+# Move only working changes
+git smart-switch target-branch --move-working
+
+# Automation-friendly with JSON output
+git-smart-switch --json --yes
 ```
+
+**Command Options:**
+- `-p, --push` - Push new branch to remote after creation
+- `-k, --keep` - Create branch from current state instead of origin/main
+- `-m, --move [commit]` - Smart move commits with strategy selection
+- `-w, --move-working` - Move only working state (staged/unstaged changes)
+- `--dry-run` - Preview operations without executing
+- `--force` - Skip safety confirmations
+- `--json` - Output in JSON format (for automation)
+- `--yes` - Skip interactive confirmations (for automation)
 
 #### Git Issue PR
 
-The `git issue-pr` extension streamlines PR creation by:
-- Creating a new PR from the command line
-- Automatically linking it to the issue ID defined in your current branch name
-- Simplifying the PR creation workflow
+The `git issue-pr` extension streamlines PR creation and management:
+
+**Enhanced Features:**
+- **🔗 Automatic Issue Linking**: Links PRs to issues using branch naming and "Closes #X" format
+- **📝 Template Support**: Uses repository PR templates with smart placeholder replacement
+- **📋 Conventional Commits**: Supports conventional commit format for PR titles
+- **🎯 Custom Scopes**: Allows any custom scope, not just predefined ones
+- **🔄 Draft State Management**: Convert existing PRs between draft and ready states
+- **🤖 Automation Support**: Full CLI parameter support with JSON output and auto-confirmation
+- **⚡ Enhanced Linking**: Adds issue comments and labels for bi-directional linking
 
 **Usage:**
 
 ```bash
+# Interactive PR creation
 git issue-pr
+
+# Direct PR creation with options
+git issue-pr --type feat --scope core --title "Custom Title" --body "Custom description"
+
+# Create as draft with automation
+git issue-pr --type fix --scope api --draft --yes
+
+# Convert existing PR to ready for review
+git issue-pr --mark-ready --yes
+
+# Convert existing PR to draft state
+git issue-pr --mark-draft --yes
+
+# Automation-friendly with JSON output
+git-issue-pr --type feat --scope custom-scope --json --yes
 ```
+
+**Command Options:**
+- `--type TYPE` - Commit type (fix, feat, chore, refactor, docs, test, etc.)
+- `--scope SCOPE` - Commit scope (any custom scope supported)
+- `--title TITLE` - Custom PR title (overrides generated title)
+- `--body BODY` - Custom PR body (overrides template)
+- `--draft` - Create PR as draft (WIP)
+- `--ready` - Create PR as ready for review (default)
+- `--mark-draft` - Convert existing PR to draft state
+- `--mark-ready` - Convert existing PR to ready for review
+- `--json` - Output in JSON format (for automation)
+- `--yes, -y` - Skip confirmation prompts (for automation)
 
 ## Workflow Examples
 
@@ -292,23 +412,25 @@ When adding issues to the dotCMS - Product Planning project, the tools provide c
 
 **Default Settings Applied:**
 - **Status**: `New` (default for all new issues)
-- **Effort Estimation**: Prompted each time with standardized options
+- **Story Point Estimation**: Prompted each time with standardized options
 
-**Effort Size Options:**
-- **XS**: < 1 day
-- **S**: 1-2 days  
-- **M**: 3-5 days
-- **L**: 1-2 weeks
-- **XL**: 2+ weeks
-- **Skip**: No effort estimation
+**Story Point Options:**
+- **XS**: 1 story point
+- **S**: 2 story points  
+- **M**: 3 story points
+- **L**: 5 story points
+- **XL**: 8 story points
+- **Skip**: No story point estimation
+
+*Note: Story points use Fibonacci sequence (1, 2, 3, 5, 8) to reflect increasing uncertainty in larger estimates.*
 
 **ProjectV2 Integration Steps:**
 1. **Add to Project**: Issue gets added to the project board
 2. **Set Status**: Automatically set to "New" status
-3. **Set Effort**: Apply selected effort estimation (if provided)
+3. **Set Story Points**: Apply selected story point estimation (if provided)
 4. **Ready for Planning**: Issue appears in project backlog for team planning
 
-**Note**: Effort estimation is intentionally prompted for each issue rather than saved as a default, since effort varies per issue and should be carefully considered each time.
+**Note**: Story point estimation is intentionally prompted for each issue rather than saved as a default, since story points vary per issue and should be carefully considered each time.
 
 ## Troubleshooting
 
