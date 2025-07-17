@@ -27,6 +27,7 @@ CUSTOM_BODY=""
 FORCE_DRAFT=false
 MARK_DRAFT=false
 MARK_READY=false
+DRY_RUN=false
 
 # Show help message
 show_help() {
@@ -61,6 +62,7 @@ show_help() {
     echo "  --ready        Create PR as ready for review (default)"
     echo "  --mark-draft   Convert existing PR to draft state"
     echo "  --mark-ready   Convert existing PR to ready for review"
+    echo "  --dry-run      Preview PR details without creating it"
     echo "  --json         Output in JSON format (for automation)"
     echo "  --yes, -y      Skip confirmation prompt (for automation)"
     echo ""
@@ -68,6 +70,7 @@ show_help() {
     echo "  git issue-pr          # Interactive PR creation"
     echo "  git issue-pr --type fix --scope core --draft --yes  # Automated draft PR"
     echo "  git issue-pr --title \"Custom PR Title\" --body \"Custom description\" --yes  # Fully automated PR"
+    echo "  git issue-pr --type fix --scope core --dry-run  # Preview PR without creating"
     echo "  git issue-pr --mark-ready --yes  # Convert existing PR to ready for review"
     echo "  git issue-pr --mark-draft --yes  # Convert existing PR to draft state"
 }
@@ -113,6 +116,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --json)
             JSON_OUTPUT=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         --yes|-y)
@@ -401,10 +408,8 @@ PR_BODY_NO_HEADER=$(echo "$PR_BODY" | sed '/^---$/,/^---$/d')
 
 # Use custom body if provided, otherwise use template/editor
 if [[ -n "$CUSTOM_BODY" ]]; then
-    # Append issue linking to custom body
-    PR_BODY="$CUSTOM_BODY
-
-$ISSUE_CONTENT"
+    # Append issue linking to custom body using printf to avoid parsing issues
+    PR_BODY=$(printf '%s\n\n%s' "$CUSTOM_BODY" "$ISSUE_CONTENT")
     echo -e "${GREEN}Using custom PR body with issue linking${NC}"
 else
     # Prepare the file for user editing
@@ -439,6 +444,22 @@ echo -e "${BLUE}Title:${NC} $PR_TITLE"
 echo -e "${BLUE}Body:${NC} $PR_BODY"
 echo -e "${BLUE}Status:${NC} $([ -n "$WIP_FLAG" ] && echo "Draft (WIP)" || echo "Ready for review")"
 echo "-------------------------------------------------"
+
+# Handle dry-run mode
+if [[ "$DRY_RUN" == true ]]; then
+    echo ""
+    echo -e "${YELLOW}[DRY RUN] PR creation preview:${NC}"
+    echo -e "${YELLOW}================================${NC}"
+    echo -e "${BLUE}Title:${NC} $PR_TITLE"
+    echo -e "${BLUE}Body:${NC}"
+    echo "$PR_BODY"
+    echo ""
+    echo -e "${BLUE}Status:${NC} $([ -n "$WIP_FLAG" ] && echo "Draft (WIP)" || echo "Ready for review")"
+    echo -e "${BLUE}Issue linking:${NC} Will be linked to issue #$ISSUE_NUMBER"
+    echo ""
+    echo -e "${YELLOW}[DRY RUN] No PR was actually created${NC}"
+    exit 0
+fi
 
 if [[ "$AUTO_CONFIRM" == true ]]; then
     CREATE_PR_REPLY="y"
