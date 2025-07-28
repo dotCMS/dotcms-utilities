@@ -470,33 +470,72 @@ else
 fi
 
 if [[ $CREATE_PR_REPLY =~ ^[Yy]$ ]]; then
-    # Create the pull request with explicit issue linking
-    if [[ "$JSON_OUTPUT" == true ]]; then
-        PR_OUTPUT=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG --json number,url,title,state)
-        echo "$PR_OUTPUT"
-        # Extract PR number for linking
-        PR_NUMBER=$(echo "$PR_OUTPUT" | jq -r '.number')
-    else
-        PR_URL=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG)
-        echo -e "${GREEN}PR created successfully!${NC}"
-        echo "$PR_URL"
-        if [ -n "$WIP_FLAG" ]; then
-            echo -e "${BLUE}Note: PR created as draft. Mark as ready for review when complete.${NC}"
+    # Check if the current branch has an upstream remote
+    UPSTREAM_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)
+    
+    if [ -z "$UPSTREAM_BRANCH" ]; then
+        echo -e "${YELLOW}Branch has no upstream remote. Pushing to origin...${NC}"
+        if git push -u origin "$BRANCH_NAME"; then
+            echo -e "${GREEN}✓ Branch pushed to origin successfully${NC}"
+        else
+            echo -e "${RED}Error: Failed to push branch to origin${NC}"
+            exit 1
         fi
-        # Extract PR number from URL for linking
-        PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]\+$')
+    else
+        # Check if local branch is ahead of remote
+        LOCAL_COMMITS=$(git rev-list --count @{u}..HEAD 2>/dev/null || echo "0")
+        if [ "$LOCAL_COMMITS" -gt 0 ]; then
+            echo -e "${YELLOW}Branch has $LOCAL_COMMITS unpushed commits. Pushing updates...${NC}"
+            if git push; then
+                echo -e "${GREEN}✓ Branch updates pushed successfully${NC}"
+            else
+                echo -e "${RED}Error: Failed to push branch updates${NC}"
+                exit 1
+            fi
+        fi
     fi
     
-    # Explicitly link the PR to the issue using GitHub CLI
-    echo -e "${BLUE}Linking PR to issue #$ISSUE_NUMBER...${NC}"
-    if gh issue edit "$ISSUE_NUMBER" --add-label "has-pr" 2>/dev/null; then
-        echo -e "${GREEN}✓ Added 'has-pr' label to issue #$ISSUE_NUMBER${NC}"
+    # Create the pull request with explicit issue linking
+    PR_CREATE_SUCCESS=false
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        if PR_OUTPUT=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG --json number,url,title,state 2>/dev/null); then
+            echo "$PR_OUTPUT"
+            # Extract PR number for linking
+            PR_NUMBER=$(echo "$PR_OUTPUT" | jq -r '.number')
+            PR_CREATE_SUCCESS=true
+        else
+            echo -e "${RED}Error: Failed to create PR${NC}"
+        fi
+    else
+        if PR_URL=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" $WIP_FLAG 2>/dev/null); then
+            echo -e "${GREEN}PR created successfully!${NC}"
+            echo "$PR_URL"
+            if [ -n "$WIP_FLAG" ]; then
+                echo -e "${BLUE}Note: PR created as draft. Mark as ready for review when complete.${NC}"
+            fi
+            # Extract PR number from URL for linking
+            PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]\+$')
+            PR_CREATE_SUCCESS=true
+        else
+            echo -e "${RED}Error: Failed to create PR${NC}"
+        fi
     fi
     
-    # Create a comment on the issue to establish the link
-    LINK_COMMENT="This issue is being addressed in PR #$PR_NUMBER"
-    if gh issue comment "$ISSUE_NUMBER" --body "$LINK_COMMENT" 2>/dev/null; then
-        echo -e "${GREEN}✓ Linked issue #$ISSUE_NUMBER to PR #$PR_NUMBER${NC}"
+    # Only attempt issue linking if PR creation was successful and we have a valid PR number
+    if [[ "$PR_CREATE_SUCCESS" == true ]] && [[ -n "$PR_NUMBER" ]] && [[ "$PR_NUMBER" != "null" ]]; then
+        # Explicitly link the PR to the issue using GitHub CLI
+        echo -e "${BLUE}Linking PR to issue #$ISSUE_NUMBER...${NC}"
+        if gh issue edit "$ISSUE_NUMBER" --add-label "has-pr" 2>/dev/null; then
+            echo -e "${GREEN}✓ Added 'has-pr' label to issue #$ISSUE_NUMBER${NC}"
+        fi
+        
+        # Create a comment on the issue to establish the link
+        LINK_COMMENT="This issue is being addressed in PR #$PR_NUMBER"
+        if gh issue comment "$ISSUE_NUMBER" --body "$LINK_COMMENT" 2>/dev/null; then
+            echo -e "${GREEN}✓ Linked issue #$ISSUE_NUMBER to PR #$PR_NUMBER${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Skipping issue linking due to PR creation failure${NC}"
     fi
 else
     echo -e "${YELLOW}PR creation cancelled.${NC}"
