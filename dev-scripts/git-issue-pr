@@ -24,6 +24,7 @@ CUSTOM_TYPE=""
 CUSTOM_SCOPE=""
 CUSTOM_TITLE=""
 CUSTOM_BODY=""
+CUSTOM_DESCRIPTION=""
 FORCE_DRAFT=false
 MARK_DRAFT=false
 MARK_READY=false
@@ -57,7 +58,8 @@ show_help() {
     echo "  --type TYPE    Specify commit type (fix, feat, chore, refactor, docs, test, ci, build, perf, style, revert)"
     echo "  --scope SCOPE  Specify commit scope (uve, core, graphql, sdk, etc. or custom)"
     echo "  --title TITLE  Custom PR title (overrides generated title)"
-    echo "  --body BODY    Custom PR body (overrides template)"
+    echo "  --body BODY          Custom PR body (overrides template)
+  --description DESC   Custom description (inserts into template)"
     echo "  --draft        Create PR as draft (WIP)"
     echo "  --ready        Create PR as ready for review (default)"
     echo "  --mark-draft   Convert existing PR to draft state"
@@ -70,6 +72,8 @@ show_help() {
     echo "  git issue-pr          # Interactive PR creation"
     echo "  git issue-pr --type fix --scope core --draft --yes  # Automated draft PR"
     echo "  git issue-pr --title \"Custom PR Title\" --body \"Custom description\" --yes  # Fully automated PR"
+    echo "  git issue-pr --description \"Fix authentication timeout issue\" --type fix --scope core  # PR with description"
+    echo "  git issue-pr --body \"Complete PR body text\" --yes  # PR with full custom body"
     echo "  git issue-pr --type fix --scope core --dry-run  # Preview PR without creating"
     echo "  git issue-pr --mark-ready --yes  # Convert existing PR to ready for review"
     echo "  git issue-pr --mark-draft --yes  # Convert existing PR to draft state"
@@ -96,6 +100,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --body)
             CUSTOM_BODY="$2"
+            shift 2
+            ;;
+        --description)
+            CUSTOM_DESCRIPTION="$2"
             shift 2
             ;;
         --draft)
@@ -406,13 +414,30 @@ fi
 PR_BODY_NO_HEADER=$(echo "$PR_BODY" | sed '/^---$/,/^---$/d')
 
 
-# Use custom body if provided, otherwise use template/editor
+# Create the PR body
+# Priority: --body > --description > template/editor
 if [[ -n "$CUSTOM_BODY" ]]; then
-    # Append issue linking to custom body using printf to avoid parsing issues
+    # --body parameter was provided, use it as-is and append issue linking
     PR_BODY=$(printf '%s\n\n%s' "$CUSTOM_BODY" "$ISSUE_CONTENT")
     echo -e "${GREEN}Using custom PR body with issue linking${NC}"
+elif [[ -n "$CUSTOM_DESCRIPTION" ]]; then
+    # --description parameter was provided, create structured PR body with description
+    PR_BODY="## Description
+
+$CUSTOM_DESCRIPTION
+
+## Changes
+
+- [ ] [List the main changes made]
+
+## Testing
+
+- [ ] [Describe testing approach]
+
+$ISSUE_CONTENT"
+    echo -e "${GREEN}Using custom description in PR template${NC}"
 else
-    # Prepare the file for user editing
+    # No custom body or description provided, use template/editor
     echo -e "${BLUE}Please review the PR details in the editor. You can make additional changes as needed.${NC}"
     TEMP_PR_BODY_FILE=$(mktemp)
     echo -e "$PR_BODY_NO_HEADER" > "$TEMP_PR_BODY_FILE"
