@@ -750,8 +750,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --assignee USER    Assign issue to user"
             echo "  --repo, -r REPO    Repository to create issue in (owner/repo format)"
             echo "  --project ID       Project ID to add issue to"
-            echo "  --description TEXT Brief description for the issue"
-            echo "  --body TEXT        Full issue body (overrides default template)"
+            echo "  --description TEXT Brief description (inserted into default template)"
+            echo "  --body TEXT        Complete issue body content (replaces entire template)"
             echo "  --effort NUMBER    Story points estimation"
             echo "  --epic             Create as Epic (sets Epic type and label if available)"
             echo "  --yes, -y          Skip confirmation prompt (for automation)"
@@ -770,6 +770,10 @@ while [[ $# -gt 0 ]]; do
             echo "  git issue-create \"Add new feature\" --branch --team CloudEng"
             echo "  git issue-create \"Update docs\" --repo dotCMS/core --team Platform"
             echo "  git issue-create \"User Authentication Epic\" --epic --team Platform --yes"
+            echo ""
+            echo "Description examples:"
+            echo "  git issue-create \"Fix login timeout\" --description \"Users are getting logged out after 5 minutes\""
+            echo "  git issue-create \"Add search feature\" --body \"## Background\\n\\nWe need to implement search...\\n\\n## Requirements\\n- Fast search\\n- Filters\""
             echo ""
             echo "Discovery commands for automation:"
             echo "  git issue-create --list-teams --repo dotCMS/core --json"
@@ -1598,8 +1602,25 @@ if [[ ${#LABELS[@]} -eq 0 ]]; then
 fi
 
 # Create the issue body
-BODY="$DESCRIPTION"
-if [[ -z "$BODY" ]]; then
+# Priority: --body > --description > default template
+if [[ -n "$BODY" ]]; then
+    # --body parameter was provided, use it as-is (full body content)
+    :  # no-op, BODY already set
+elif [[ -n "$DESCRIPTION" ]]; then
+    # --description parameter was provided, use it as the description in template
+    BODY="## Description
+
+$DESCRIPTION
+
+## Acceptance Criteria
+
+- [ ] [Define what needs to be accomplished]
+
+## Additional Notes
+
+[Any additional context or notes]"
+else
+    # No description provided, use default template
     BODY="## Description
 
 [Brief description of the issue]
