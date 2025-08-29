@@ -33,7 +33,12 @@ This configuration provides:
 - At least 16GB RAM available for containers
 - 100GB+ disk space for data storage
 
+```
+/etc/sysctl.d/90-glowroot.conf:
+fs.aio-max-nr = 1048576
+```
 ### 1. Create Data Directories
+`/opt/data/` may need to be a big and fast disk
 
 ```bash
 sudo mkdir -p /opt/data/{scylladb/{data,commitlog,hints,view_hints,logs},glowroot}
@@ -43,14 +48,16 @@ sudo chown -R $(id -u):$(id -g) /opt/data/
 ### 2. Start Services
 
 ```bash
+docker compose up -d 
+or
 # Start ScyllaDB first
-docker-compose up -d scylladb
+docker compose up -d scylladb
 
 # Wait for ScyllaDB to be ready (check logs)
-docker-compose logs -f scylladb
+docker compose logs -f scylladb
 
 # Start Glowroot Central
-docker-compose up -d glowroot-central
+docker compose up -d glowroot-central
 ```
 
 ### 3. Access Web UI
@@ -83,7 +90,7 @@ docker-compose up -d glowroot-central
 
 **Data Retention:**
 - **Traces**: 14 days
-- **Aggregates**: 90 days  
+- **Aggregates**: 90 days
 - **Gauges**: 90 days
 - **Incidents**: 1 year
 
@@ -101,7 +108,7 @@ docker-compose up -d glowroot-central
 
 **Request Profiles:**
 - **slow**: 300 second timeout
-- **collector**: 30 second timeout  
+- **collector**: 30 second timeout
 - **rollup**: 20 second timeout
 - **web**: 20 second timeout
 
@@ -137,34 +144,34 @@ java -javaagent:glowroot/glowroot.jar -jar your-application.jar
 
 ```bash
 # Check ScyllaDB status
-docker-compose exec scylladb nodetool status
+docker compose exec scylladb nodetool status
 
 # Check Glowroot Central health
 curl http://localhost:4000/backend/config/health
 
 # View container logs
-docker-compose logs -f scylladb
-docker-compose logs -f glowroot-central
+docker compose logs -f scylladb
+docker compose logs -f glowroot-central
 ```
 
 ### ScyllaDB Operations
 
 ```bash
 # Connect to CQL shell
-docker-compose exec scylladb cqlsh
+docker compose exec scylladb cqlsh
 
 # Check keyspaces
-docker-compose exec scylladb cqlsh -e "DESCRIBE KEYSPACES;"
+docker compose exec scylladb cqlsh -e "DESCRIBE KEYSPACES;"
 
 # Monitor performance
-docker-compose exec scylladb nodetool cfstats glowroot
+docker compose exec scylladb nodetool cfstats glowroot
 ```
 
 ### Backup and Recovery
 
 ```bash
 # Create ScyllaDB snapshot
-docker-compose exec scylladb nodetool snapshot glowroot
+docker compose exec scylladb nodetool snapshot glowroot
 
 # Backup Glowroot configuration
 tar -czf glowroot-backup.tar.gz /opt/data/glowroot/
@@ -218,20 +225,20 @@ free -h
 df -h /opt/data/scylladb/
 
 # Review ScyllaDB logs
-docker-compose logs scylladb
+docker compose logs scylladb
 ```
 
 **Glowroot Central Connection Issues:**
 ```bash
 # Verify ScyllaDB is accessible
-docker-compose exec glowroot-central cqlsh scylladb -e "DESCRIBE KEYSPACES;"
+docker compose exec glowroot-central cqlsh scylladb -e "DESCRIBE KEYSPACES;"
 
 # Check Glowroot logs
-docker-compose logs glowroot-central
+docker compose logs glowroot-central
 ```
 
 **High Memory Usage:**
-- Reduce JVM heap size in docker-compose.yml
+- Reduce JVM heap size in docker compose.yml
 - Adjust ScyllaDB memory allocation
 - Monitor with `docker stats`
 

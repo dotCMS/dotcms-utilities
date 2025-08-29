@@ -1,0 +1,61 @@
+services:
+  scylladb:
+    image: scylladb/scylla:latest
+    container_name: scylladb
+    restart: unless-stopped
+    volumes:
+      - /opt/data/scylladb/data:/var/lib/scylla/data
+      - /opt/data/scylladb/commitlog:/var/lib/scylla/commitlog
+      - /opt/data/scylladb/hints:/var/lib/scylla/hints
+      - /opt/data/scylladb/view_hints:/var/lib/scylla/view_hints
+      - /opt/data/scylladb/logs:/var/lib/scylla/logs
+    network_mode: host
+    command: >
+      --seeds=127.0.0.1
+      --smp=14
+      --memory=96G
+      --reserve-memory=4G
+      --overprovisioned=0
+      --api-address=0.0.0.0
+      --listen-address=0.0.0.0
+      --rpc-address=0.0.0.0
+      --broadcast-address=127.0.0.1
+      --broadcast-rpc-address=127.0.0.1
+      --prometheus-address=0.0.0.0
+      --prometheus-port=9180
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  glowroot-central:
+    image: glowroot/glowroot-central:latest
+    container_name: glowroot-central
+    restart: unless-stopped
+    volumes:
+      - /opt/data/glowroot:/var/lib/glowroot-central
+      - ./glowroot-central.properties:/var/lib/glowroot-central/glowroot-central.properties:ro
+      - ./datastax-driver.conf:/usr/share/glowroot-central/datastax-driver.conf:ro
+    environment:
+      - JAVA_OPTS=-Xmx24g -Xms16g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:G1HeapRegionSize=32m -XX:+UnlockExperimentalVMOptions -XX:+UseStringDeduplication
+      - GLOWROOT_CENTRAL_OPTS=-Dglowroot.central.dir=/var/lib/glowroot-central
+    depends_on:
+      scylladb:
+        condition: service_healthy
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/backend/config/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
