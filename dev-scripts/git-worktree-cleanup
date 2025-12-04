@@ -1,0 +1,325 @@
+#!/bin/bash
+
+# git-worktree-cleanup - Clean up merged and stale worktrees
+# Usage: git worktree-cleanup [--help] [--dry-run] [--all]
+
+# Determine the directory of the calling script
+script_dir="$(dirname "$(realpath "$0")")"
+
+# Call the check_updates.sh script from the determined directory
+"$script_dir/check_updates.sh"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+DRY_RUN=false
+REMOVE_ALL=false
+INTERACTIVE=true
+AUTO_CONFIRM=false
+
+show_help() {
+    echo -e "${BLUE}git-worktree-cleanup - Clean up merged and stale worktrees${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  git worktree-cleanup [options]"
+    echo ""
+    echo -e "${YELLOW}Description:${NC}"
+    echo "  Identifies and removes worktrees for merged branches."
+    echo "  Helps maintain a clean worktrees/ directory by removing:"
+    echo "    • Worktrees whose branches have been merged to main"
+    echo "    • Stale worktrees (optionally)"
+    echo "    • Orphaned worktree directories"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  --help, -h      Show this help message"
+    echo "  --dry-run       Preview operations without executing"
+    echo "  --all           Remove all worktrees except main/master"
+    echo "  --yes, -y       Skip confirmation prompts"
+    echo "  --list          List worktrees with merge status"
+    echo ""
+    echo -e "${YELLOW}Safety Features:${NC}"
+    echo "  • Never removes main/master worktrees"
+    echo "  • Warns about uncommitted changes"
+    echo "  • Confirms before deletion (unless --yes)"
+    echo "  • Preserves git history (only removes worktrees, not branches)"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  git worktree-cleanup              # Interactive cleanup"
+    echo "  git worktree-cleanup --dry-run    # Preview cleanup operations"
+    echo "  git worktree-cleanup --list       # List worktrees with status"
+    echo "  git worktree-cleanup --yes        # Auto-confirm deletions"
+    echo ""
+    echo -e "${YELLOW}Cleanup Process:${NC}"
+    echo "  1. Scans all worktrees in repo/worktrees/"
+    echo "  2. Checks merge status against main branch"
+    echo "  3. Identifies worktrees with/without uncommitted changes"
+    echo "  4. Prompts for confirmation (unless --yes)"
+    echo "  5. Removes worktree and updates git metadata"
+}
+
+get_main_branch() {
+    local main_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+    if [ -z "$main_branch" ]; then
+        if git show-ref --verify --quiet refs/heads/main; then
+            echo "main"
+        elif git show-ref --verify --quiet refs/heads/master; then
+            echo "master"
+        else
+            echo ""
+        fi
+    else
+        echo "$main_branch"
+    fi
+}
+
+is_merged() {
+    local branch="$1"
+    local main_branch="$2"
+
+    # Check if branch is merged into main
+    local merge_base=$(git merge-base "$branch" "$main_branch" 2>/dev/null)
+    local branch_commit=$(git rev-parse "$branch" 2>/dev/null)
+
+    if [[ "$merge_base" == "$branch_commit" ]]; then
+        return 0  # Merged
+    else
+        return 1  # Not merged
+    fi
+}
+
+has_uncommitted_changes() {
+    local worktree_path="$1"
+
+    # Check for uncommitted changes in worktree
+    if [ ! -d "$worktree_path" ]; then
+        return 1  # Worktree doesn't exist
+    fi
+
+    cd "$worktree_path" || return 1
+
+    # Check for staged or unstaged changes
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+        return 0  # Has changes
+    fi
+
+    # Check for untracked files
+    if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        return 0  # Has untracked files
+    fi
+
+    return 1  # Clean
+}
+
+list_worktrees() {
+    local main_branch=$(get_main_branch)
+    local repo_root=$(git rev-parse --show-toplevel)
+
+    echo -e "${BLUE}Worktrees Status:${NC}"
+    echo ""
+
+    git worktree list --porcelain | awk -v main="$main_branch" '
+        /^worktree/ { path = $2 }
+        /^branch/ {
+            branch = $2
+            gsub("refs/heads/", "", branch)
+        }
+        /^$/ && path != "" {
+            print path " " branch
+            path = ""
+            branch = ""
+        }
+    ' | while read -r worktree_path branch; do
+        if [[ "$branch" == "$main_branch" ]]; then
+            status="${GREEN}[main]${NC}"
+        elif is_merged "$branch" "$main_branch" 2>/dev/null; then
+            status="${YELLOW}[merged]${NC}"
+        else
+            status="${BLUE}[active]${NC}"
+        fi
+
+        if has_uncommitted_changes "$worktree_path"; then
+            changes="${RED}[uncommitted changes]${NC}"
+        else
+            changes="${GREEN}[clean]${NC}"
+        fi
+
+        # Make path relative to repo root
+        relative_path=${worktree_path#$repo_root/}
+
+        echo -e "  ${GREEN}$branch${NC} $status $changes"
+        echo -e "    ${BLUE}Path:${NC} $relative_path"
+        echo ""
+    done
+}
+
+remove_worktree() {
+    local worktree_path="$1"
+    local branch="$2"
+    local force="$3"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo -e "${YELLOW}[DRY RUN] Would remove worktree:${NC}"
+        echo -e "  ${BLUE}Path:${NC} $worktree_path"
+        echo -e "  ${BLUE}Branch:${NC} $branch"
+        if [[ "$force" == "true" ]]; then
+            echo -e "  ${YELLOW}Force remove (has uncommitted changes)${NC}"
+        fi
+        return 0
+    fi
+
+    # Remove worktree
+    if [[ "$force" == "true" ]]; then
+        git worktree remove --force "$worktree_path" 2>/dev/null
+    else
+        git worktree remove "$worktree_path" 2>/dev/null
+    fi
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Removed worktree: $branch${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ Failed to remove worktree: $branch${NC}"
+        return 1
+    fi
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        --all)
+            REMOVE_ALL=true
+            ;;
+        --yes|-y)
+            AUTO_CONFIRM=true
+            ;;
+        --list)
+            list_worktrees
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option '$1'${NC}"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# Verify we're in a git repository
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    echo -e "${RED}Error: Not in a git repository${NC}"
+    exit 1
+fi
+
+# Get main branch
+MAIN_BRANCH=$(get_main_branch)
+if [ -z "$MAIN_BRANCH" ]; then
+    echo -e "${RED}Error: Cannot determine main branch${NC}"
+    exit 1
+fi
+
+echo -e "${BLUE}Scanning worktrees...${NC}"
+echo -e "${BLUE}Main branch:${NC} ${GREEN}$MAIN_BRANCH${NC}"
+echo ""
+
+# Collect worktrees to remove
+WORKTREES_TO_REMOVE=()
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+git worktree list --porcelain | awk '
+    /^worktree/ { path = $2 }
+    /^branch/ {
+        branch = $2
+        gsub("refs/heads/", "", branch)
+    }
+    /^$/ && path != "" {
+        print path " " branch
+        path = ""
+        branch = ""
+    }
+' | while read -r worktree_path branch; do
+    # Skip main branch
+    if [[ "$branch" == "$MAIN_BRANCH" ]] || [[ "$branch" == "master" ]] || [[ "$branch" == "main" ]]; then
+        continue
+    fi
+
+    # Determine if should be removed
+    should_remove=false
+    reason=""
+    force_remove=false
+
+    if [[ "$REMOVE_ALL" == true ]]; then
+        should_remove=true
+        reason="manual cleanup (--all)"
+    elif is_merged "$branch" "$MAIN_BRANCH" 2>/dev/null; then
+        should_remove=true
+        reason="merged to $MAIN_BRANCH"
+    fi
+
+    if [[ "$should_remove" == true ]]; then
+        # Check for uncommitted changes
+        if has_uncommitted_changes "$worktree_path"; then
+            echo -e "${YELLOW}Found merged worktree with uncommitted changes:${NC}"
+            echo -e "  ${BLUE}Branch:${NC} $branch"
+            echo -e "  ${BLUE}Path:${NC} ${worktree_path#$REPO_ROOT/}"
+            echo -e "  ${YELLOW}Reason:${NC} $reason"
+            echo -e "  ${RED}Warning: Has uncommitted changes${NC}"
+            echo ""
+
+            if [[ "$AUTO_CONFIRM" == false ]]; then
+                read -p "Remove anyway (changes will be lost)? (y/N) " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    force_remove=true
+                else
+                    echo -e "${YELLOW}Skipped${NC}"
+                    echo ""
+                    continue
+                fi
+            else
+                force_remove=true
+            fi
+        else
+            echo -e "${GREEN}Found worktree to remove:${NC}"
+            echo -e "  ${BLUE}Branch:${NC} $branch"
+            echo -e "  ${BLUE}Path:${NC} ${worktree_path#$REPO_ROOT/}"
+            echo -e "  ${YELLOW}Reason:${NC} $reason"
+            echo ""
+        fi
+
+        # Confirm removal
+        if [[ "$AUTO_CONFIRM" == false ]] && [[ "$force_remove" == false ]]; then
+            read -p "Remove this worktree? (y/N) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${YELLOW}Skipped${NC}"
+                echo ""
+                continue
+            fi
+        fi
+
+        # Remove worktree
+        remove_worktree "$worktree_path" "$branch" "$force_remove"
+        echo ""
+    fi
+done
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${YELLOW}Dry run complete. Run without --dry-run to execute removals.${NC}"
+else
+    echo -e "${GREEN}Cleanup complete!${NC}"
+    echo ""
+    echo -e "${BLUE}Remaining worktrees:${NC}"
+    git worktree list
+fi
