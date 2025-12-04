@@ -38,6 +38,25 @@ This guide documents a comprehensive git worktree-based workflow that allows you
 - No worktrees scattered across different filesystem locations
 - Everything related to `dotcms-core` stays inside `dotcms-core/`
 
+**Git Configuration:**
+
+To prevent Git from trying to track the `worktrees/` directory and any documentation files in the base directory, we use `.git/info/exclude` instead of `.gitignore`:
+
+```bash
+# After migration, the migration script adds to .git/info/exclude:
+/worktrees/
+/README.md
+```
+
+**Why `.git/info/exclude` instead of `.gitignore`?**
+- ✅ **Local to your repository** - Not tracked or committed
+- ✅ **Works across all branches** - All worktrees see the same exclusions
+- ✅ **No branch conflicts** - Switching worktrees doesn't change exclusion rules
+- ✅ **Zero code changes** - Existing branches remain untouched
+- ❌ `.gitignore` would need to be committed to each branch, causing merge conflicts
+
+This enables the worktree structure without modifying any code or branch files.
+
 ## Scripts
 
 ### 1. `git-migrate-to-worktrees`
