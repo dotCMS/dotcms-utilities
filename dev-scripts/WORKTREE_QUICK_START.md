@@ -48,9 +48,14 @@ git smart-switch main                 # Navigates to main worktree
 
 ### Create Worktree for Issue
 ```bash
-git issue-branch                      # Interactive selection (adapts to repo type)
-git issue-branch --issue 123          # Specific issue (creates worktree in worktree repos)
-git issue-branch --issue 123 --open-ide cursor  # Create + open (worktree repos)
+# NO ISSUE NUMBER NEEDED - Interactive selection!
+git issue-branch
+# → Shows searchable list of your issues
+# → Type to filter, arrow keys to select
+# → Works in both traditional and worktree repos
+
+git issue-branch --issue 123          # Direct issue number (if you know it)
+git issue-branch --open-ide cursor    # Interactive + auto-open IDE
 ```
 
 ### Open IDE for Worktree

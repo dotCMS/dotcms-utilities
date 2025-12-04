@@ -63,24 +63,35 @@ Creates branches OR worktrees from GitHub issues - automatically adapts to repos
 
 **Usage:**
 ```bash
-# Interactive issue selection (works in both traditional and worktree repos)
+# Interactive issue selection - NO ISSUE NUMBER NEEDED!
 git issue-branch
+# → Shows searchable list of your assigned and recently created issues
+# → Select with arrow keys or type to filter
+# → Works in both traditional and worktree repos
 
-# Specific issue
+# Direct issue number (if you already know it)
 git issue-branch --issue 123
 
-# Create and open in IDE (worktree repos only)
-git issue-branch --issue 123 --open-ide cursor
+# Interactive selection with IDE launch (worktree repos)
+git issue-branch --open-ide cursor
+# → Select issue from list, then IDE opens automatically
 
-# List issues
+# List all available issues
 git issue-branch --list
 
-# Dry run
+# Preview what would happen (dry run)
 git issue-branch --issue 123 --dry-run
 
-# Automation mode
+# Automation mode (skip confirmations)
 git issue-branch --issue 123 --yes
 ```
+
+**No Issue Number Required:**
+- Just run `git issue-branch` without any arguments
+- Get an interactive, searchable list of issues
+- Filter by typing (fuzzy search)
+- Select with arrow keys or number
+- Perfect when you don't remember the exact issue number!
 
 **Adaptive Behavior:**
 - **Traditional repos:** Creates/switches branches (classic workflow)
@@ -89,7 +100,8 @@ git issue-branch --issue 123 --yes
 - No need to remember separate commands!
 
 **Features:**
-- Lists your assigned and recently created issues
+- **Interactive issue selection** - searchable list with fuzzy filtering
+- Shows your assigned and recently created issues
 - In worktree repos: Creates worktree in `worktrees/issue-{number}-{title}/`
 - In traditional repos: Creates/switches to branch `issue-{number}-{title}`
 - Automatically links branch to GitHub issue
@@ -280,41 +292,128 @@ git issue-branch --issue 456
 
 ## Native Git Commands vs. Helper Scripts
 
-**Important:** Once migrated to worktrees, you can use standard git commands to manage worktrees:
+**You have complete freedom to choose your workflow!** The helper scripts (`git issue-branch`, `git smart-switch`) are entirely optional. You can manage worktrees using standard git commands if you prefer.
+
+### Option A: Native Git Commands (More Work, Full Control)
 
 ```bash
-# Native git worktree commands (always work)
-git worktree add worktrees/feature-branch feature-branch
+# Create a new worktree manually
+git worktree add worktrees/issue-123-feature issue-123-feature
+
+# Navigate to it
+cd worktrees/issue-123-feature
+
+# Link to GitHub issue (optional)
+gh issue develop 123 --checkout
+
+# Open your IDE
+cursor .
+
+# List all worktrees
 git worktree list
-git worktree remove worktrees/feature-branch
+
+# Remove a worktree when done
+git worktree remove worktrees/issue-123-feature
+
+# Clean up orphaned worktree metadata
 git worktree prune
 ```
 
-**However, the helper scripts provide:**
+**When to use native commands:**
+- You prefer manual control over every step
+- You're comfortable with git worktree syntax
+- You want to use custom naming conventions
+- You're scripting your own workflows
+- You don't need GitHub issue integration
 
-1. **Consistency** - Standardized naming conventions (`worktrees/issue-123-title/`)
-2. **Safety** - Prevents common mistakes (wrong directory, naming conflicts)
-3. **Convenience** - GitHub issue integration, IDE launching, automatic linking
-4. **Time savings** - Less typing, fewer commands to remember
-5. **Error prevention** - Validates branch names, handles edge cases
-
-### Comparison: Native vs. Helper Scripts
+### Option B: Helper Scripts (Less Work, Convenience Features)
 
 ```bash
-# Native Git Way (more manual)
-git worktree add worktrees/my-feature feature-branch
-cd worktrees/my-feature
-gh issue develop 123 --checkout
-cursor .
+# Create worktree with one command (interactive or direct)
+git issue-branch                    # Interactive issue selection
+git issue-branch --issue 123        # Direct issue number
+git issue-branch --open-ide cursor  # Create + open IDE
 
-# Helper Script Way (integrated workflow)
+# Navigate between worktrees safely
+git smart-switch main               # Creates/navigates to main worktree
+git smart-switch issue-456          # Creates/navigates to issue-456 worktree
+
+# Clean up merged worktrees automatically
+git worktree-cleanup
+```
+
+**What helper scripts provide:**
+
+1. **Consistency** - Standardized naming (`worktrees/issue-123-title/`)
+2. **Safety** - Prevents common mistakes (wrong directory, naming conflicts)
+3. **GitHub Integration** - Automatic issue linking, searches your assigned issues
+4. **Time Savings** - One command instead of multiple steps
+5. **Error Prevention** - Validates branch names, handles edge cases
+6. **IDE Integration** - Automatically launches your preferred IDE
+7. **Interactive Selection** - Searchable issue list when you don't know the number
+
+### Full Comparison: Native vs. Helper Scripts
+
+**Creating a worktree from GitHub issue #123:**
+
+```bash
+# Native Git Way (5 steps, more typing)
+git fetch origin
+git worktree add worktrees/issue-123-add-dark-mode issue-123-add-dark-mode
+cd worktrees/issue-123-add-dark-mode
+gh issue develop 123 --checkout  # Link to GitHub issue
+cursor .                          # Open IDE
+
+# Helper Script Way (1 command)
 git issue-branch --issue 123 --open-ide cursor
 # ✅ Creates worktree with standard naming
 # ✅ Links to GitHub issue automatically
 # ✅ Opens IDE in one command
+# ✅ Handles errors gracefully
 ```
 
-**Bottom Line:** The scripts are **optional conveniences**, not requirements. Use native git commands if you prefer, or use the scripts for a smoother workflow. Both approaches work perfectly!
+**Switching to work on a different branch:**
+
+```bash
+# Native Git Way
+cd ~/git/dotcms-core/worktrees/main
+# Or create new worktree if it doesn't exist:
+git worktree add worktrees/main main
+cd worktrees/main
+
+# Helper Script Way (from anywhere in the repo)
+git smart-switch main
+# ✅ Detects worktree structure
+# ✅ Creates worktree if needed
+# ✅ Shows you the path to navigate to
+```
+
+**Cleaning up merged worktrees:**
+
+```bash
+# Native Git Way (manual for each worktree)
+git worktree list  # See all worktrees
+git branch -d issue-123-feature  # Delete branch
+git worktree remove worktrees/issue-123-feature
+# Repeat for each merged worktree...
+
+# Helper Script Way (automated)
+git worktree-cleanup
+# ✅ Detects merged branches automatically
+# ✅ Shows which worktrees will be removed
+# ✅ Confirms before deletion
+# ✅ Preserves uncommitted changes
+```
+
+### Bottom Line: Your Choice!
+
+**Both approaches work perfectly!** Choose based on your preferences:
+
+- **Use native commands** if you want full manual control and don't need GitHub integration
+- **Use helper scripts** if you want convenience, safety features, and time savings
+- **Mix both** - use native commands for some tasks, helper scripts for others
+
+The worktree structure works the same regardless of which commands you use to create and manage worktrees. The scripts simply automate common patterns and add safety guardrails.
 
 ## Critical Rules for Working with Worktrees
 
@@ -545,21 +644,7 @@ The `git-smart-switch` script can detect and switch to existing worktrees:
 git smart-switch issue-123-feature
 ```
 
-### Shell prompt integration
-
-Add to `.bashrc` or `.zshrc`:
-
-```bash
-# Show current worktree in prompt
-worktree_prompt() {
-    local wt=$(git rev-parse --show-toplevel 2>/dev/null)
-    if [[ "$wt" =~ /worktrees/([^/]+)$ ]]; then
-        echo "[${BASH_REMATCH[1]}]"
-    fi
-}
-
-PS1='$(worktree_prompt) $ '
-```
+**Note:** Your shell prompt should already display the current branch name through standard git integration. Each worktree directory is a full git repository with its own branch, so existing git prompt configurations work automatically without additional setup.
 
 ## Best Practices
 
@@ -622,6 +707,284 @@ A: No! You can create worktrees manually with `git worktree add` or use `git iss
 
 **Q: What about disk space?**
 A: Worktrees use similar disk space to a single checkout (not per worktree). The `.git` directory is shared.
+
+## Git Worktree Command Reference
+
+For those who prefer using native git commands, here's a complete reference of standard git worktree operations:
+
+### Creating Worktrees
+
+```bash
+# Create a new worktree from an existing branch
+git worktree add <path> <branch>
+git worktree add worktrees/feature-branch feature-branch
+
+# Create a new worktree and new branch from current HEAD
+git worktree add -b <new-branch> <path>
+git worktree add -b issue-123-fix worktrees/issue-123-fix
+
+# Create a new worktree and new branch from a specific commit/branch
+git worktree add -b <new-branch> <path> <commit-ish>
+git worktree add -b hotfix worktrees/hotfix-123 main
+
+# Create worktree without checking out files (bare worktree)
+git worktree add --no-checkout <path> <branch>
+
+# Create detached HEAD worktree at specific commit
+git worktree add --detach <path> <commit>
+git worktree add --detach worktrees/test-commit abc123
+```
+
+### Listing Worktrees
+
+```bash
+# List all worktrees
+git worktree list
+
+# List worktrees with detailed information (porcelain format)
+git worktree list --porcelain
+
+# Example output:
+# worktree /Users/user/git/dotcms-core
+# HEAD 1234567890abcdef
+# branch refs/heads/main
+#
+# worktree /Users/user/git/dotcms-core/worktrees/issue-123
+# HEAD abcdef1234567890
+# branch refs/heads/issue-123-feature
+```
+
+### Removing Worktrees
+
+```bash
+# Remove a worktree (must have no uncommitted changes)
+git worktree remove <path>
+git worktree remove worktrees/issue-123-feature
+
+# Force remove a worktree (even with uncommitted changes)
+git worktree remove --force <path>
+git worktree remove -f worktrees/issue-123-feature
+```
+
+### Moving Worktrees
+
+```bash
+# Move/rename a worktree to a new location
+git worktree move <source> <destination>
+git worktree move worktrees/old-name worktrees/new-name
+```
+
+### Pruning Worktrees
+
+```bash
+# Remove worktree information for deleted worktrees
+git worktree prune
+
+# Dry run - show what would be pruned
+git worktree prune --dry-run
+
+# Verbose output
+git worktree prune --verbose
+```
+
+### Locking/Unlocking Worktrees
+
+**What are locked worktrees?**
+
+Locking a worktree prevents `git worktree prune` from automatically removing its administrative data, even if the worktree directory has been deleted or moved. This is useful when:
+
+- Working on a network drive that may be temporarily unavailable
+- Moving worktrees to different locations (external drives, NAS, etc.)
+- Protecting important long-running work from accidental cleanup
+- Working on removable media (USB drives)
+
+**When Git locks worktrees automatically:**
+- Worktrees on removable media are automatically locked
+- When Git detects a worktree is on a different filesystem than the main repo
+
+```bash
+# Lock a worktree (prevents automatic pruning)
+git worktree lock <path>
+git worktree lock worktrees/important-feature
+
+# Optional: provide a reason (recommended for team repos)
+git worktree lock worktrees/important-feature --reason "Work in progress, do not remove"
+
+# Unlock a worktree
+git worktree unlock <path>
+git worktree unlock worktrees/important-feature
+
+# Check if a worktree is locked (shows in list output)
+git worktree list
+# Output shows: worktree /path/to/worktree  locked
+```
+
+**Common scenarios:**
+
+```bash
+# Moving worktree to external drive
+git worktree lock worktrees/big-feature --reason "Moved to external SSD"
+mv worktrees/big-feature /Volumes/ExternalSSD/
+# Later: unlock when back in standard location
+git worktree unlock /Volumes/ExternalSSD/big-feature
+
+# Network drive temporarily unavailable
+git worktree lock worktrees/shared-work --reason "Network drive may disconnect"
+# Prevents pruning when network is down
+# Unlock when network is stable
+git worktree unlock worktrees/shared-work
+```
+
+### Repairing Worktrees
+
+```bash
+# Repair worktree administrative files (if moved manually)
+git worktree repair
+
+# Repair specific worktree
+git worktree repair <path>
+```
+
+### Working with Worktree Branches
+
+```bash
+# Inside a worktree, all standard git commands work:
+cd worktrees/issue-123-feature
+
+# Check current branch
+git branch --show-current
+
+# Create a new branch from current worktree
+git checkout -b new-branch
+
+# Switch branches (NOT recommended - breaks directory/branch matching)
+git checkout other-branch  # ⚠️ Avoid this in worktrees!
+
+# Commit, push, pull - all work normally
+git add .
+git commit -m "Fix bug"
+git push origin issue-123-feature
+```
+
+### Checking Worktree Status
+
+```bash
+# Check if current directory is a worktree
+git rev-parse --git-dir
+# Output: /path/to/repo/.git/worktrees/branch-name (if worktree)
+# Output: .git (if main working tree)
+
+# Get the common git directory (shared across all worktrees)
+git rev-parse --git-common-dir
+# Output: /path/to/repo/.git
+
+# Get the root directory of current worktree
+git rev-parse --show-toplevel
+```
+
+### Advanced Usage
+
+```bash
+# Create worktree with specific initial commit
+git worktree add <path> <commit-hash>
+
+# Create orphan branch in worktree (no commit history)
+git worktree add --orphan <path>
+
+# Create worktree for existing remote branch
+git worktree add worktrees/feature origin/feature
+
+# Create worktree tracking a remote branch
+git worktree add -b local-feature worktrees/feature origin/feature
+```
+
+### Common Workflows with Native Commands
+
+**Parallel Feature Development:**
+```bash
+# Work on multiple features simultaneously
+git worktree add worktrees/feature-a feature-a
+git worktree add worktrees/feature-b feature-b
+git worktree add worktrees/main main
+
+# Switch between them by changing directories
+cd worktrees/feature-a  # Work on feature A
+cd worktrees/feature-b  # Work on feature B
+cd worktrees/main       # Check main branch
+```
+
+**Emergency Hotfix:**
+```bash
+# Create hotfix worktree from main
+git worktree add -b hotfix-urgent worktrees/hotfix-urgent main
+cd worktrees/hotfix-urgent
+# Fix bug, commit, push
+git add .
+git commit -m "Fix critical bug"
+git push origin hotfix-urgent
+# Create PR, get it merged
+cd ../..
+git worktree remove worktrees/hotfix-urgent
+git branch -d hotfix-urgent
+```
+
+**Code Review in Separate Worktree:**
+```bash
+# Create temporary worktree for reviewing a PR
+git fetch origin pull/123/head:pr-123
+git worktree add worktrees/pr-123-review pr-123
+cd worktrees/pr-123-review
+# Review code, test locally
+cd ../..
+git worktree remove worktrees/pr-123-review
+git branch -d pr-123
+```
+
+### Cleanup After Merging
+
+```bash
+# After branch is merged on GitHub
+git fetch --prune  # Update remote branch info
+
+# Remove the worktree
+git worktree remove worktrees/issue-123-feature
+
+# Delete the local branch
+git branch -d issue-123-feature
+
+# If branch wasn't merged (force delete)
+git branch -D issue-123-feature
+```
+
+### Troubleshooting Commands
+
+```bash
+# List locked worktrees
+git worktree list | grep locked
+
+# Manually unlock all worktrees
+find .git/worktrees -name locked -delete
+
+# Check for corrupted worktrees
+git worktree list --porcelain | grep -A 3 "^worktree"
+
+# Repair all worktrees
+git worktree repair
+
+# Remove all worktree metadata (nuclear option)
+rm -rf .git/worktrees/*
+git worktree prune
+```
+
+### Configuration Options
+
+```bash
+# Set default behavior for worktree creation
+git config worktree.guessRemote true  # Auto-track remote branches
+
+# Configure worktree paths
+git config extensions.worktreeConfig true
+```
 
 ## Resources
 
