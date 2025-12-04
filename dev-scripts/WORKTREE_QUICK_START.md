@@ -1,5 +1,7 @@
 # Git Worktree Quick Start Guide
 
+**Note:** This guide uses `~/git/` as an example location for repositories. The worktree structure works in **any directory** you choose - `/projects/`, `/workspace/`, your home directory, etc. All worktrees stay **inside the repository directory**, keeping everything self-contained and portable.
+
 ## TL;DR - Get Started
 
 ### Option A: Fresh Clone (Recommended)

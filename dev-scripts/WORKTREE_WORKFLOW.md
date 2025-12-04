@@ -15,20 +15,28 @@ This guide documents a comprehensive git worktree-based workflow that allows you
 
 ## Directory Structure
 
+**Note:** This example uses `~/git/` as the repository root, but this structure works **anywhere you clone repositories** - your home directory, `/projects/`, `/workspace/`, etc. The key is that all worktrees are contained **within the repository directory**, keeping everything self-contained and portable.
+
 ```
-~/git/
-├── dotcms-core/                    # Main repository
+~/git/                              # Example location (use any directory you prefer)
+├── dotcms-core/                    # Main repository (completely self-contained)
 │   ├── .git/                       # All git metadata here
-│   ├── worktrees/                  # All working trees
-│   │   ├── main/                   # Main branch
-│   │   ├── issue-123-add-feature/  # Issue #123
-│   │   └── issue-456-fix-bug/      # Issue #456
-│   ├── docs/                       # Optional: docs in main
+│   ├── worktrees/                  # All working trees live INSIDE the repo
+│   │   ├── main/                   # Main branch worktree
+│   │   ├── issue-123-add-feature/  # Issue #123 worktree
+│   │   └── issue-456-fix-bug/      # Issue #456 worktree
+│   ├── docs/                       # Optional: docs in base directory
 │   └── README.md
 │
-└── dotcms-utilities/               # Regular clone (no worktrees)
+└── dotcms-utilities/               # Another repo (regular clone, no worktrees)
     └── dev-scripts/
 ```
+
+**Self-Contained Structure:**
+- All worktrees are subdirectories within the repository
+- Moving the repository directory moves all worktrees together
+- No worktrees scattered across different filesystem locations
+- Everything related to `dotcms-core` stays inside `dotcms-core/`
 
 ## Scripts
 
