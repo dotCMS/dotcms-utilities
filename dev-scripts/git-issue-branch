@@ -3,6 +3,7 @@
 # git-issue-branch - Work with GitHub issues and create/switch branches
 # Usage: git issue-branch [--help] [--json] [--list]
 # Supports both interactive and automated workflows with JSON output and issue discovery
+# Automatically detects worktree structure and delegates to appropriate workflow
 
 # Determine the directory of the calling script
 script_dir="$(dirname "$(realpath "$0")")"
@@ -26,6 +27,48 @@ BRANCH_FROM_CURRENT=false
 AUTO_CONFIRM=false
 DRY_RUN=false
 
+# Check if repository is using the NEW worktree structure pattern
+# (repo with worktrees/ subdirectory containing worktrees)
+is_worktree_repo() {
+    local git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [[ -z "$git_common_dir" ]]; then
+        return 1
+    fi
+    
+    # Get the base repository root (parent of .git directory)
+    local base_repo_root=$(dirname "$git_common_dir")
+    
+    # Check if worktrees/ directory exists in the base repo and has at least one worktree
+    if [[ -d "$base_repo_root/worktrees" ]]; then
+        # Check if it has any subdirectories (actual worktrees)
+        if [ -n "$(find "$base_repo_root/worktrees" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Check if we're in an OLD worktree pattern (separate worktree folder, not in worktrees/ subdirectory)
+is_old_worktree() {
+    local git_dir=$(git rev-parse --git-dir 2>/dev/null)
+    local repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+
+    if [[ -z "$git_dir" || -z "$repo_root" ]]; then
+        return 1
+    fi
+
+    # Check if we're in a worktree (git-dir points to .git/worktrees/*)
+    if [[ "$git_dir" == *".git/worktrees/"* ]]; then
+        # Check if this is NOT part of the new pattern (worktrees/ subdirectory)
+        if [[ ! -d "$repo_root/../worktrees" ]] && [[ "$(basename "$(dirname "$repo_root")")" != "worktrees" ]]; then
+            return 0  # Old worktree pattern detected
+        fi
+    fi
+
+    return 1
+}
+
 # Show help message
 show_help() {
     echo -e "${BLUE}git-issue-branch - Work with GitHub issues and create/switch branches${NC}"
@@ -36,6 +79,12 @@ show_help() {
     echo -e "${YELLOW}Description:${NC}"
     echo "  Interactive tool to select from your assigned or recently created GitHub issues"
     echo "  and create/switch to branches. Shows issues with PR status indicators."
+    echo ""
+    echo -e "${YELLOW}✨ Smart Worktree Detection:${NC}"
+    echo "  • Automatically detects if repository uses worktree structure"
+    echo "  • Non-worktree repos: Traditional branch switching (git checkout)"
+    echo "  • Worktree repos: Creates isolated worktree directories"
+    echo "  • Seamless experience - same command, works everywhere!"
     echo ""
     echo -e "${YELLOW}Features:${NC}"
     echo "  • Lists issues assigned to you or recently created by you"
@@ -49,7 +98,7 @@ show_help() {
     echo "  --json        Output in JSON format (for automation)"
     echo "  --list        List issues without interactive selection"
     echo "  --issue NUMBER  Work with specific issue number (for automation)"
-    echo "  --from-current  Create branch from current working state (for automation)"
+    echo "  --from-current  Create branch from current working state (non-worktree only)"
     echo "  --dry-run     Preview operations without executing them"
     echo "  --yes, -y     Skip confirmation prompts (for automation)"
     echo "  --with-pr-status  Include PR status indicators (slower but more informative)"
@@ -63,10 +112,10 @@ show_help() {
     echo "  git issue-branch --issue 30 --dry-run  # Preview branch creation without executing"
     echo "  git issue-branch --with-pr-status  # Include PR status indicators (slower)"
     echo ""
-    echo -e "${YELLOW}Branch Naming:${NC}"
+    echo -e "${YELLOW}Branch/Worktree Naming:${NC}"
     echo "  • Format: issue-{number}-{sanitized-title}"
     echo "  • Automatic conflict resolution with numbered suffixes"
-    echo "  • Branches are automatically linked to GitHub issues"
+    echo "  • Branches/Worktrees are automatically linked to GitHub issues"
 }
 
 sanitize_title() {
@@ -128,6 +177,9 @@ create_and_switch_branch() {
     git smart-switch "$branch_name"
 }
 
+# Store original arguments for delegation
+ORIGINAL_ARGS=("$@")
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -165,6 +217,56 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# Check if we're in an old worktree pattern (warn but continue with traditional workflow)
+if is_old_worktree; then
+    local repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+    echo -e "${YELLOW}⚠️  Old worktree pattern detected!${NC}"
+    echo -e "${YELLOW}You're in a separate worktree folder (not using worktrees/ subdirectory structure)${NC}"
+    echo ""
+    echo -e "${BLUE}Current location:${NC} $repo_root"
+    echo -e "${BLUE}Recommendation:${NC} Migrate to the new worktree structure for better organization"
+    echo ""
+    echo -e "${YELLOW}To migrate:${NC}"
+    echo "  1. cd to the base repository (not this worktree)"
+    echo "  2. Run: git migrate-to-worktrees"
+    echo "  3. Clean up old worktree folders like this one"
+    echo ""
+    echo -e "${BLUE}Continuing with traditional branch switching workflow for now...${NC}"
+    echo ""
+fi
+
+# Detect NEW worktree structure and delegate if needed
+if is_worktree_repo; then
+    echo -e "${BLUE}New worktree structure detected - delegating to git-issue-worktree${NC}"
+    echo ""
+
+    # Map git-issue-branch options to git-issue-worktree options
+    WORKTREE_ARGS=()
+
+    for arg in "${ORIGINAL_ARGS[@]}"; do
+        case "$arg" in
+            --from-current)
+                # In worktree mode, this doesn't make sense (each worktree is isolated)
+                # Skip this option
+                ;;
+            *)
+                # Pass through all other options
+                WORKTREE_ARGS+=("$arg")
+                ;;
+        esac
+    done
+
+    # Delegate to git-issue-worktree
+    exec "$script_dir/git-issue-worktree" "${WORKTREE_ARGS[@]}"
+    exit $?
+fi
+
+# Continue with traditional branch workflow for non-worktree repos
+if ! is_old_worktree; then
+    echo -e "${BLUE}Traditional repository detected - using branch switching workflow${NC}"
+    echo ""
+fi
 
 # Get current GitHub user
 CURRENT_USER=$(gh api user --jq '.login')

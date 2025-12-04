@@ -87,23 +87,196 @@ NC='\033[0m' # No Color
 
 # Function to select a branch using fzf or a fallback method, now only showing local branches
 select_branch() {
+    # Check if we're in a worktree-enabled repo
+    local in_worktree_repo=false
+    if is_worktree_repo; then
+        in_worktree_repo=true
+    fi
+
     if [ "$FZF_AVAILABLE" -eq 1 ]; then
-        # Using fzf to select a local branch, highlighting the current branch
-        echo "Select a branch (current branch is highlighted):" >&2
-        selected_branch=$(git branch --sort=-committerdate | fzf --height 20% --reverse |  sed -e 's/^[\* ]*//')
+        # Using fzf to select a local branch
+        if [ "$in_worktree_repo" = true ]; then
+            echo "Select a branch (* = current, [worktree] = has worktree, sorted by recent activity):" >&2
+
+            # Get all branches with worktree info and modification times for sorting
+            local branch_list=$(
+                # Get all local branches with their reflog timestamps
+                git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads/ | while read -r branch; do
+                    # Skip worktree-parent
+                    if [[ "$branch" == "worktree-parent" ]]; then
+                        continue
+                    fi
+
+                    # Check if branch has a worktree and get its path
+                    local worktree_path=$(git worktree list --porcelain | awk -v branch="$branch" '
+                        /^worktree/ { path = $2 }
+                        /^branch/ {
+                            br = $2
+                            gsub("refs/heads/", "", br)
+                            if (br == branch) { print path; exit }
+                        }
+                    ' 2>/dev/null)
+
+                    local has_worktree=false
+                    if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
+                        has_worktree=true
+                    fi
+
+                    # Get most recent reflog timestamp (last time branch was used)
+                    # Get the commit hash from the most recent reflog entry, then get its commit date
+                    local latest_hash=$(git reflog show "$branch" 2>/dev/null | head -1 | awk '{print $1}')
+                    if [[ -n "$latest_hash" ]]; then
+                        reflog_time=$(git show -s --format=%ct "$latest_hash" 2>/dev/null)
+                    fi
+
+                    # If no reflog but has worktree, use worktree creation time
+                    if [[ -z "$reflog_time" && "$has_worktree" == true ]]; then
+                        reflog_time=$(stat -f "%B" "$worktree_path" 2>/dev/null || stat -c "%W" "$worktree_path" 2>/dev/null)
+                        # If birth time not available (stat %W returns 0 on some systems), use modification time
+                        if [[ -z "$reflog_time" || "$reflog_time" == "0" ]]; then
+                            reflog_time=$(stat -f "%m" "$worktree_path" 2>/dev/null || stat -c "%Y" "$worktree_path" 2>/dev/null)
+                        fi
+                    fi
+
+                    # If still no reflog, use commit date as fallback
+                    if [[ -z "$reflog_time" ]]; then
+                        reflog_time=$(git log -1 --format=%ct "$branch" 2>/dev/null)
+                    fi
+
+                    # If still no timestamp, use epoch 0
+                    if [[ -z "$reflog_time" ]]; then
+                        reflog_time=0
+                    fi
+
+                    if [[ "$has_worktree" == true ]]; then
+                        echo "$reflog_time|worktree|$branch"
+                    else
+                        echo "$reflog_time|nobranch|$branch"
+                    fi
+                done | sort -t'|' -k1 -rn | while IFS='|' read -r timestamp type branch; do
+                local prefix=""
+                local current_branch=$(git branch --show-current 2>/dev/null)
+
+                # Mark current branch
+                if [[ "$branch" == "$current_branch" ]]; then
+                    prefix="* "
+                fi
+
+                # Mark if has worktree
+                if [[ "$type" == "worktree" ]]; then
+                    echo "${prefix}${branch} [worktree]"
+                else
+                    echo "${prefix}${branch}"
+                fi
+            done)
+
+            selected_branch=$(echo "$branch_list" | fzf --height 40% --reverse | sed -e 's/^[\* ]*//' -e 's/ \[worktree\]$//')
+        else
+            echo "Select a branch (current branch is highlighted):" >&2
+            selected_branch=$(git branch --sort=-committerdate | fzf --height 20% --reverse | sed -e 's/^[\* ]*//')
+        fi
     else
-        # Fallback to using select, only showing local branches, highlighting the current branch
+        # Fallback to using select
         echo "fzf not found, using fallback method to select branch." >&2
-        echo "Select a branch (current branch is marked with '->'):" >&2
-        select branch in $(git branch --sort=-committerdate | sed "s/$current_branch/-> $current_branch/"); do
-            if [ -n "$branch" ]; then
-                # Remove any formatting added for current branch indication
-                selected_branch=$(echo $branch | sed 's/-> //' | sed -e 's/^[[:space:]]*//')
-                break
-            else
-                echo "Invalid selection. Please try again." >&2
-            fi
-        done
+
+        if [ "$in_worktree_repo" = true ]; then
+            echo "Select a branch (-> = current, [W] = has worktree, sorted by recent activity):" >&2
+
+            # Build sorted list of branches with worktree markers
+            local branches=()
+            local current_branch=$(git branch --show-current 2>/dev/null)
+
+            # Get sorted list (same logic as fzf version - using reflog)
+            while IFS='|' read -r timestamp type branch; do
+                local display="$branch"
+
+                # Mark current branch
+                if [[ "$branch" == "$current_branch" ]]; then
+                    display="-> $display"
+                fi
+
+                # Mark if has worktree
+                if [[ "$type" == "worktree" ]]; then
+                    display="$display [W]"
+                fi
+
+                branches+=("$display")
+            done < <(
+                # Get all local branches with their reflog timestamps
+                git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads/ | while read -r branch; do
+                    # Skip worktree-parent
+                    if [[ "$branch" == "worktree-parent" ]]; then
+                        continue
+                    fi
+
+                    # Check if branch has a worktree and get its path
+                    local worktree_path=$(git worktree list --porcelain | awk -v branch="$branch" '
+                        /^worktree/ { path = $2 }
+                        /^branch/ {
+                            br = $2
+                            gsub("refs/heads/", "", br)
+                            if (br == branch) { print path; exit }
+                        }
+                    ' 2>/dev/null)
+
+                    local has_worktree=false
+                    if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
+                        has_worktree=true
+                    fi
+
+                    # Get most recent reflog timestamp (last time branch was used)
+                    # Get the commit hash from the most recent reflog entry, then get its commit date
+                    local latest_hash=$(git reflog show "$branch" 2>/dev/null | head -1 | awk '{print $1}')
+                    if [[ -n "$latest_hash" ]]; then
+                        reflog_time=$(git show -s --format=%ct "$latest_hash" 2>/dev/null)
+                    fi
+
+                    # If no reflog but has worktree, use worktree creation time
+                    if [[ -z "$reflog_time" && "$has_worktree" == true ]]; then
+                        reflog_time=$(stat -f "%B" "$worktree_path" 2>/dev/null || stat -c "%W" "$worktree_path" 2>/dev/null)
+                        # If birth time not available (stat %W returns 0 on some systems), use modification time
+                        if [[ -z "$reflog_time" || "$reflog_time" == "0" ]]; then
+                            reflog_time=$(stat -f "%m" "$worktree_path" 2>/dev/null || stat -c "%Y" "$worktree_path" 2>/dev/null)
+                        fi
+                    fi
+
+                    # If still no reflog, use commit date as fallback
+                    if [[ -z "$reflog_time" ]]; then
+                        reflog_time=$(git log -1 --format=%ct "$branch" 2>/dev/null)
+                    fi
+
+                    # If still no timestamp, use epoch 0
+                    if [[ -z "$reflog_time" ]]; then
+                        reflog_time=0
+                    fi
+
+                    if [[ "$has_worktree" == true ]]; then
+                        echo "$reflog_time|worktree|$branch"
+                    else
+                        echo "$reflog_time|nobranch|$branch"
+                    fi
+                done | sort -t'|' -k1 -rn
+            )
+
+            select branch in "${branches[@]}"; do
+                if [ -n "$branch" ]; then
+                    selected_branch=$(echo "$branch" | sed 's/-> //' | sed 's/ \[W\]$//' | sed -e 's/^[[:space:]]*//')
+                    break
+                else
+                    echo "Invalid selection. Please try again." >&2
+                fi
+            done
+        else
+            echo "Select a branch (current branch is marked with '->'):" >&2
+            select branch in $(git branch --sort=-committerdate | sed "s/$current_branch/-> $current_branch/"); do
+                if [ -n "$branch" ]; then
+                    selected_branch=$(echo $branch | sed 's/-> //' | sed -e 's/^[[:space:]]*//')
+                    break
+                else
+                    echo "Invalid selection. Please try again." >&2
+                fi
+            done
+        fi
     fi
     echo $selected_branch
 }
@@ -135,6 +308,180 @@ select_commit() {
     fi
     
     echo $selected_commit
+}
+
+ # Function to check if we're in a worktree-enabled repository
+is_worktree_repo() {
+    # Get the git common dir (base repo .git), then get parent directory
+    local git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    local repo_root=$(dirname "$git_common_dir")
+    [[ -d "$repo_root/worktrees" ]] && return 0 || return 1
+}
+
+# Function to find if a branch already has a worktree (anywhere)
+find_worktree_for_branch() {
+    local branch="$1"
+
+    # Parse worktree list to find where this branch is checked out
+    git worktree list --porcelain | awk -v branch="$branch" '
+        /^worktree/ { path = $2 }
+        /^branch/ {
+            br = $2
+            gsub("refs/heads/", "", br)
+            if (br == branch) {
+                print path
+                exit
+            }
+        }
+    '
+}
+
+# Function to find if a branch is checked out in an old worktree
+find_old_worktree_for_branch() {
+    local branch="$1"
+    local git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    local repo_root=$(dirname "$git_common_dir")
+
+    # Parse worktree list to find branches checked out outside worktrees/ directory
+    git worktree list --porcelain | awk -v branch="$branch" -v repo_root="$repo_root" '
+        /^worktree/ { path = $2 }
+        /^branch/ {
+            br = $2
+            gsub("refs/heads/", "", br)
+            if (br == branch && path !~ /\/worktrees\//) {
+                # Found branch in old worktree pattern (not in worktrees/ subdirectory)
+                # Exclude the base repo itself
+                if (path != repo_root) {
+                    print path
+                    exit
+                }
+            }
+        }
+    '
+}
+
+# Function to migrate old worktree to new structure
+migrate_old_worktree() {
+    local branch="$1"
+    local old_path="$2"
+    local git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    local repo_root=$(dirname "$git_common_dir")
+    local new_path="$repo_root/worktrees/$branch"
+
+    echo -e "${YELLOW}⚠️  Branch '$branch' is checked out in old worktree pattern${NC}"
+    echo -e "${BLUE}Old location:${NC} $old_path"
+    echo -e "${BLUE}New location:${NC} $new_path"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  1. Migrate worktree to new structure (RECOMMENDED - preserves everything)"
+    echo "  2. Remove old worktree and create fresh one (loses uncommitted changes)"
+    echo "  3. Cancel operation"
+    echo ""
+    read -p "Choose option (1/2/3): " -n 1 -r
+    echo ""
+    echo
+
+    case $REPLY in
+        1)
+            echo -e "${BLUE}Migrating worktree to new structure...${NC}"
+            echo ""
+
+            # Create worktrees directory if it doesn't exist
+            mkdir -p "$repo_root/worktrees"
+
+            # Check for uncommitted changes in old worktree
+            cd "$old_path"
+            if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+                echo -e "${YELLOW}  Uncommitted changes detected - stashing for safety...${NC}"
+                STASH_MSG="Pre-migration backup from $old_path ($(date +%Y%m%d-%H%M%S))"
+                git stash push -m "$STASH_MSG" 2>/dev/null
+                echo -e "${GREEN}  ✓ Changes stashed: $STASH_MSG${NC}"
+            fi
+
+            cd "$repo_root"
+
+            # Move the directory
+            echo -e "${BLUE}  Moving: $old_path → $new_path${NC}"
+            mv "$old_path" "$new_path"
+
+            # Update git worktree metadata
+            echo -e "${BLUE}  Updating git worktree metadata...${NC}"
+
+            # Remove old worktree entry
+            git worktree prune 2>/dev/null
+
+            # Re-add worktree at new location
+            # This updates .git/worktrees/ to point to the new location
+            cd "$new_path"
+
+            # Fix the .git file to point to correct worktree metadata
+            local worktree_git_file="$new_path/.git"
+            if [[ -f "$worktree_git_file" ]]; then
+                echo "gitdir: $repo_root/.git/worktrees/$branch" > "$worktree_git_file"
+            fi
+
+            # Update worktree metadata paths
+            local worktree_meta="$repo_root/.git/worktrees/$branch"
+            if [[ -d "$worktree_meta" ]]; then
+                echo "$new_path" > "$worktree_meta/gitdir"
+            fi
+
+            # Restore stashed changes if any
+            if git stash list 2>/dev/null | grep -q "$STASH_MSG"; then
+                echo -e "${BLUE}  Restoring uncommitted changes...${NC}"
+                git stash pop 2>/dev/null
+            fi
+
+            echo ""
+            echo -e "${GREEN}✓ Worktree migrated successfully!${NC}"
+            echo -e "${BLUE}New location:${NC} $new_path"
+            echo ""
+
+            # Update the path for the caller
+            echo "$new_path"
+            return 0
+            ;;
+        2)
+            echo -e "${YELLOW}Removing old worktree and creating fresh one...${NC}"
+            echo ""
+
+            # Remove old worktree
+            if git worktree remove "$old_path" --force 2>/dev/null; then
+                echo -e "${GREEN}  ✓ Old worktree removed${NC}"
+            else
+                echo -e "${YELLOW}  Manual removal...${NC}"
+                rm -rf "$old_path"
+                git worktree prune
+                echo -e "${GREEN}  ✓ Manually removed and pruned${NC}"
+            fi
+
+            # Create new worktree
+            mkdir -p "$repo_root/worktrees"
+            echo -e "${BLUE}  Creating new worktree at: $new_path${NC}"
+            git worktree add "$new_path" "$branch"
+
+            # Disable sparse checkout in the new worktree (only parent should be sparse)
+            if [[ -d "$new_path" ]]; then
+                cd "$new_path"
+                git config core.sparseCheckout false
+                git sparse-checkout disable 2>/dev/null || true
+                git read-tree -mu HEAD 2>/dev/null || true
+                cd "$repo_root"
+            fi
+
+            echo ""
+            echo -e "${GREEN}✓ Fresh worktree created!${NC}"
+            echo -e "${RED}⚠️  Note: Uncommitted changes from old worktree were lost${NC}"
+            echo ""
+
+            echo "$new_path"
+            return 0
+            ;;
+        3|*)
+            echo -e "${YELLOW}Operation cancelled${NC}"
+            return 1
+            ;;
+    esac
 }
 
 # Function to move only working state
@@ -908,10 +1255,129 @@ if [ "$dry_run" = true ]; then
     exit 0
 fi
 
+# Prevent switching to worktree-parent branch (it's only for base repo)
+if [[ "$new_branch" == "worktree-parent" ]]; then
+    echo ""
+    echo -e "${RED}Error: Cannot switch to 'worktree-parent' branch${NC}"
+    echo -e "${YELLOW}This branch is a placeholder for the base repository and should not be used for work.${NC}"
+    echo ""
+    echo -e "${BLUE}Use a regular branch instead:${NC}"
+    echo "  git smart-switch main"
+    echo "  git smart-switch <feature-branch>"
+    echo ""
+    exit 1
+fi
+
 # Create WIP commits if necessary
 create_wip
 
 git fetch origin
+
+# Check if we're in a worktree-enabled repo
+if is_worktree_repo; then
+    # First check if branch already has ANY worktree (new or old structure)
+    EXISTING_WORKTREE_PATH=$(find_worktree_for_branch "$new_branch")
+
+    if [[ -n "$EXISTING_WORKTREE_PATH" ]]; then
+        GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+        REPO_ROOT=$(dirname "$GIT_COMMON_DIR")
+
+        # Check if it's in the new structure (worktrees/) or old structure
+        if [[ "$EXISTING_WORKTREE_PATH" == "$REPO_ROOT/worktrees/"* ]]; then
+            # Already in new structure - just navigate there
+            echo ""
+            echo -e "${GREEN}✓ Worktree already exists for branch '$new_branch'${NC}"
+            echo -e "${BLUE}Location:${NC} $EXISTING_WORKTREE_PATH"
+            echo ""
+            echo -e "${YELLOW}Navigate to it with:${NC}"
+            echo -e "${GREEN}  cd \"$EXISTING_WORKTREE_PATH\"${NC}"
+            echo ""
+
+            # Output path for easy cd
+            echo "$EXISTING_WORKTREE_PATH"
+            exit 0
+        else
+            # Old worktree pattern - offer migration
+            echo ""
+            echo -e "${YELLOW}════════════════════════════════════════════════════${NC}"
+            echo -e "${YELLOW}   OLD WORKTREE PATTERN DETECTED${NC}"
+            echo -e "${YELLOW}════════════════════════════════════════════════════${NC}"
+            echo ""
+
+            # Offer to migrate the old worktree
+            MIGRATED_PATH=$(migrate_old_worktree "$new_branch" "$EXISTING_WORKTREE_PATH")
+            MIGRATION_STATUS=$?
+
+            if [[ $MIGRATION_STATUS -eq 0 ]]; then
+                echo -e "${GREEN}✓ Worktree migration completed${NC}"
+                echo -e "${BLUE}Navigate to:${NC} cd \"$MIGRATED_PATH\""
+                echo ""
+                echo -e "${YELLOW}Note: You're still in your current worktree${NC}"
+                echo -e "${YELLOW}To work on the migrated worktree, cd to the path above${NC}"
+
+                # Output path for easy cd
+                echo "$MIGRATED_PATH"
+                exit 0
+            else
+                echo -e "${RED}Migration cancelled or failed${NC}"
+                exit 1
+            fi
+        fi
+    fi
+
+    # If we get here, branch doesn't have a worktree yet
+    # Check if we're currently inside a worktree directory
+    CURRENT_DIR=$(pwd)
+    GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+    REPO_ROOT=$(dirname "$GIT_COMMON_DIR")
+
+    if [[ "$CURRENT_DIR" == "$REPO_ROOT/worktrees/"* ]]; then
+        # We're inside a worktree directory - create new worktree instead of checking out
+        echo ""
+        echo -e "${YELLOW}⚠️  You're in a worktree structure${NC}"
+        echo -e "${YELLOW}Creating new worktree for '$new_branch' instead of checking out here${NC}"
+        echo ""
+
+        NEW_WORKTREE_PATH="$REPO_ROOT/worktrees/$new_branch"
+
+        # Check if branch exists
+        if git rev-parse --verify "$new_branch" >/dev/null 2>&1; then
+            # Branch exists - create worktree from it
+            echo -e "${BLUE}Creating worktree for existing branch '$new_branch'${NC}"
+            git worktree add "$NEW_WORKTREE_PATH" "$new_branch"
+        else
+            # Branch doesn't exist - create new branch and worktree
+            echo -e "${BLUE}Creating new branch '$new_branch' and worktree${NC}"
+
+            if [ "$keep_current_state" = true ]; then
+                echo "Creating from current state..."
+                git worktree add -b "$new_branch" "$NEW_WORKTREE_PATH"
+            else
+                echo "Creating from origin/main..."
+                git worktree add -b "$new_branch" "$NEW_WORKTREE_PATH" origin/main
+            fi
+        fi
+
+        if [[ $? -eq 0 ]]; then
+            # Disable sparse checkout in the new worktree (only parent should be sparse)
+            echo -e "${BLUE}Disabling sparse checkout in worktree...${NC}"
+            cd "$NEW_WORKTREE_PATH"
+            git config core.sparseCheckout false
+            git sparse-checkout disable 2>/dev/null || true
+            git read-tree -mu HEAD 2>/dev/null || true
+            cd "$REPO_ROOT"
+            
+            echo ""
+            echo -e "${GREEN}✓ Worktree created${NC}"
+            echo ""
+
+            # Output path for wrapper function to cd to
+            echo "$NEW_WORKTREE_PATH"
+        fi
+
+        exit 0
+    fi
+fi
 
 # Switch to the new branch, creating it if necessary
 if git rev-parse --verify "$new_branch" >/dev/null 2>&1; then

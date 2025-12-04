@@ -1,0 +1,221 @@
+#!/bin/bash
+
+# git-clone-worktree - Clone repository with worktree structure from the start
+# Usage: git clone-worktree <repository-url> [directory] [--main-branch BRANCH]
+
+# Determine the directory of the calling script
+script_dir="$(dirname "$(realpath "$0")")"
+
+# Call the check_updates.sh script from the determined directory
+"$script_dir/check_updates.sh"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+REPO_URL=""
+TARGET_DIR=""
+MAIN_BRANCH=""
+CREATE_MAIN_WORKTREE=true
+
+show_help() {
+    echo -e "${BLUE}git-clone-worktree - Clone repository with worktree structure${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  git clone-worktree <repository-url> [directory] [options]"
+    echo ""
+    echo -e "${YELLOW}Description:${NC}"
+    echo "  Clones a git repository and immediately sets up worktree structure:"
+    echo "  1. Clones the repository"
+    echo "  2. Creates worktrees/ directory"
+    echo "  3. Creates worktree for main/master branch"
+    echo "  4. Ready to use git-issue-worktree for development"
+    echo ""
+    echo -e "${YELLOW}Arguments:${NC}"
+    echo "  repository-url    Git repository URL (required)"
+    echo "  directory         Target directory name (optional, inferred from URL)"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  --help, -h              Show this help message"
+    echo "  --main-branch BRANCH    Specify main branch name (default: auto-detect)"
+    echo "  --no-main-worktree      Skip creating main branch worktree"
+    echo ""
+    echo -e "${YELLOW}Structure Created:${NC}"
+    echo "  target-dir/"
+    echo "    ├── .git/                # Git metadata"
+    echo "    └── worktrees/"
+    echo "        └── main/            # Main branch worktree"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  git clone-worktree git@github.com:dotCMS/core.git"
+    echo "  git clone-worktree git@github.com:dotCMS/core.git dotcms-core"
+    echo "  git clone-worktree https://github.com/user/repo.git --main-branch develop"
+    echo "  git clone-worktree git@github.com:org/repo.git --no-main-worktree"
+    echo ""
+    echo -e "${YELLOW}After Cloning:${NC}"
+    echo "  cd target-dir"
+    echo "  git issue-worktree --issue 123        # Create worktree for issue"
+    echo "  git worktree-ide worktrees/main       # Open main in IDE"
+}
+
+# Parse command line arguments
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --main-branch)
+            MAIN_BRANCH="$2"
+            shift
+            ;;
+        --no-main-worktree)
+            CREATE_MAIN_WORKTREE=false
+            ;;
+        -*)
+            echo -e "${RED}Error: Unknown option '$1'${NC}"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
+
+# Restore positional parameters
+set -- "${POSITIONAL_ARGS[@]}"
+
+# Get repository URL (required)
+if [[ $# -lt 1 ]]; then
+    echo -e "${RED}Error: Repository URL required${NC}"
+    echo "Usage: git clone-worktree <repository-url> [directory]"
+    echo "Use --help for more information"
+    exit 1
+fi
+
+REPO_URL="$1"
+
+# Get or infer target directory
+if [[ $# -ge 2 ]]; then
+    TARGET_DIR="$2"
+else
+    # Infer directory name from repository URL
+    # Examples:
+    # git@github.com:dotCMS/core.git -> core
+    # https://github.com/user/repo.git -> repo
+    TARGET_DIR=$(basename "$REPO_URL" .git)
+fi
+
+# Validate inputs
+if [[ -z "$REPO_URL" ]]; then
+    echo -e "${RED}Error: Repository URL cannot be empty${NC}"
+    exit 1
+fi
+
+if [[ -z "$TARGET_DIR" ]]; then
+    echo -e "${RED}Error: Could not determine target directory${NC}"
+    echo "Please specify directory explicitly"
+    exit 1
+fi
+
+# Check if target directory already exists
+if [[ -d "$TARGET_DIR" ]]; then
+    echo -e "${RED}Error: Directory '$TARGET_DIR' already exists${NC}"
+    echo "Please specify a different directory name"
+    exit 1
+fi
+
+echo -e "${BLUE}Cloning with worktree structure:${NC}"
+echo -e "${BLUE}Repository:${NC} $REPO_URL"
+echo -e "${BLUE}Directory:${NC} $TARGET_DIR"
+echo ""
+
+# Step 1: Clone the repository
+echo -e "${BLUE}[1/3] Cloning repository...${NC}"
+if ! git clone "$REPO_URL" "$TARGET_DIR"; then
+    echo -e "${RED}Error: Failed to clone repository${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Repository cloned${NC}"
+echo ""
+
+# Change to repository directory
+cd "$TARGET_DIR" || exit 1
+
+# Determine main branch if not specified
+if [[ -z "$MAIN_BRANCH" ]]; then
+    echo -e "${BLUE}[2/3] Detecting main branch...${NC}"
+
+    # Try to get default branch from remote
+    MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+
+    if [[ -z "$MAIN_BRANCH" ]]; then
+        # Fallback: try common branch names
+        if git show-ref --verify --quiet refs/heads/main; then
+            MAIN_BRANCH="main"
+        elif git show-ref --verify --quiet refs/heads/master; then
+            MAIN_BRANCH="master"
+        elif git show-ref --verify --quiet refs/heads/develop; then
+            MAIN_BRANCH="develop"
+        else
+            echo -e "${RED}Error: Cannot determine main branch${NC}"
+            echo "Please specify with --main-branch option"
+            exit 1
+        fi
+    fi
+
+    echo -e "${GREEN}✓ Detected main branch: $MAIN_BRANCH${NC}"
+else
+    echo -e "${BLUE}[2/3] Using specified main branch: $MAIN_BRANCH${NC}"
+fi
+
+echo ""
+
+# Step 2: Create worktrees directory
+echo -e "${BLUE}[3/3] Setting up worktree structure...${NC}"
+mkdir -p worktrees
+
+# Step 3: Create main branch worktree (optional)
+if [[ "$CREATE_MAIN_WORKTREE" == true ]]; then
+    echo -e "${BLUE}Creating worktree for $MAIN_BRANCH...${NC}"
+
+    if git worktree add "worktrees/$MAIN_BRANCH" "$MAIN_BRANCH" 2>/dev/null; then
+        echo -e "${GREEN}✓ Worktree created at worktrees/$MAIN_BRANCH${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not create main branch worktree${NC}"
+        echo -e "${YELLOW}You can create it manually with:${NC}"
+        echo "  git worktree add worktrees/$MAIN_BRANCH $MAIN_BRANCH"
+    fi
+else
+    echo -e "${YELLOW}Skipping main branch worktree creation (--no-main-worktree)${NC}"
+fi
+
+echo ""
+echo -e "${GREEN}✓ Clone complete with worktree structure!${NC}"
+echo ""
+
+# Show current worktrees
+echo -e "${BLUE}Current worktrees:${NC}"
+git worktree list
+echo ""
+
+# Get absolute path for display
+ABS_TARGET_DIR="$(pwd)"
+
+echo -e "${YELLOW}Next steps:${NC}"
+echo "  cd $TARGET_DIR"
+if [[ "$CREATE_MAIN_WORKTREE" == true ]]; then
+    echo "  cd worktrees/$MAIN_BRANCH                # Work in main branch"
+fi
+echo "  git issue-worktree --issue 123           # Create worktree for issue"
+echo "  git worktree-ide                         # Open IDE"
+echo ""
+echo -e "${BLUE}Worktree location:${NC} $ABS_TARGET_DIR/worktrees/"
+echo ""

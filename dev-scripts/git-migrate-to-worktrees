@@ -1,0 +1,1283 @@
+#!/bin/bash
+
+# git-migrate-to-worktrees - Convert existing repo to worktree-based structure
+# Usage: git migrate-to-worktrees [--help] [--dry-run]
+
+# Determine the directory of the calling script
+script_dir="$(dirname "$(realpath "$0")")"
+
+# Call the check_updates.sh script from the determined directory
+"$script_dir/check_updates.sh"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+DRY_RUN=false
+
+show_help() {
+    echo -e "${BLUE}git-migrate-to-worktrees - Convert existing repo to worktree structure${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  git migrate-to-worktrees [--help] [--dry-run]"
+    echo ""
+    echo -e "${YELLOW}Description:${NC}"
+    echo "  Converts an existing git repository to use worktree-based workflow:"
+    echo "  1. Converts main repo to sparse checkout (git metadata only)"
+    echo "  2. ALWAYS creates worktree for default branch (main/master)"
+    echo "  3. Creates worktree for current branch (if different from default)"
+    echo "  4. Preserves all uncommitted changes in current branch worktree"
+    echo "  5. Leaves you in the worktree for the branch you were on"
+    echo ""
+    echo -e "${YELLOW}Structure After Migration:${NC}"
+    echo "  repo/"
+    echo "    ├── .git/              # Git metadata (sparse - minimal files)"
+    echo "    └── worktrees/         # All work happens here"
+    echo "        ├── main/          # Default branch (ALWAYS created)"
+    echo "        └── feature-123/   # Your current branch (if not main)"
+    echo ""
+    echo -e "${YELLOW}What Happens:${NC}"
+    echo "  • Main repo becomes sparse (only .git and minimal files)"
+    echo "  • Default branch worktree is ALWAYS created"
+    echo "  • Current branch worktree is created (if different)"
+    echo "  • Uncommitted changes move to current branch worktree"
+    echo "  • You end up in: worktrees/<current-branch>/"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  --help, -h    Show this help message"
+    echo "  --dry-run     Preview operations without executing them"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  git migrate-to-worktrees          # Migrate current repo"
+    echo "  git migrate-to-worktrees --dry-run  # Preview migration"
+    echo ""
+    echo -e "${YELLOW}After Migration:${NC}"
+    echo "  cd worktrees/main              # Work on main branch"
+    echo "  git issue-worktree --issue 123 # Create worktree for issue"
+    echo "  git smart-switch feature       # Navigate to feature worktree"
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown option '$1'${NC}"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# Verify we're in a git repository
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    echo -e "${RED}Error: Not in a git repository${NC}"
+    exit 1
+fi
+
+# Check if we're in an old worktree (prevent migration from worktree)
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+if [[ "$GIT_DIR" == *".git/worktrees/"* ]]; then
+    REPO_ROOT=$(git rev-parse --show-toplevel)
+
+    # Check if this is NOT part of the new pattern
+    if [[ "$(basename "$(dirname "$REPO_ROOT")")" != "worktrees" ]]; then
+        echo -e "${RED}Error: Cannot migrate from within a worktree!${NC}"
+        echo ""
+        echo -e "${YELLOW}You're currently in a worktree directory:${NC} $REPO_ROOT"
+        echo ""
+        echo -e "${BLUE}To migrate, you must run this command from the base repository.${NC}"
+        echo ""
+        echo -e "${YELLOW}Steps to migrate:${NC}"
+        echo "  1. Find your base repository (look for .git directory, not .git file)"
+        echo "  2. cd to the base repository"
+        echo "  3. Run: git migrate-to-worktrees"
+        echo ""
+        echo -e "${YELLOW}After migration:${NC}"
+        echo "  • Your old worktree folders (like this one) will no longer be needed"
+        echo "  • Remove them manually to prevent confusion"
+        echo "  • New worktrees will be in: base-repo/worktrees/"
+        echo ""
+        exit 1
+    fi
+fi
+
+# Get repository root
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT" || exit 1
+
+echo -e "${BLUE}Repository:${NC} $REPO_ROOT"
+
+# Check if already using worktrees - run validation mode FIRST
+if [ -d "$REPO_ROOT/worktrees" ]; then
+    echo -e "${GREEN}✓ Repository is already using worktree structure${NC}"
+    echo ""
+
+    # Determine main branch for validation mode
+    MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+    if [ -z "$MAIN_BRANCH" ]; then
+        # Fallback: try common branch names
+        if git show-ref --verify --quiet refs/heads/main; then
+            MAIN_BRANCH="main"
+        elif git show-ref --verify --quiet refs/heads/master; then
+            MAIN_BRANCH="master"
+        else
+            MAIN_BRANCH="main"  # Default fallback
+        fi
+    fi
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}           WORKTREE STRUCTURE VALIDATION${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    # Validate structure
+    echo -e "${BLUE}[1/4] Checking worktree structure...${NC}"
+
+    # List all worktrees
+    echo ""
+    echo -e "${YELLOW}All worktrees:${NC}"
+    git worktree list
+    echo ""
+
+    # Check for old worktrees outside worktrees/ directory
+    echo -e "${BLUE}[2/4] Checking for old worktree pattern...${NC}"
+    OLD_WORKTREES=$(git worktree list --porcelain | awk -v repo_root="$REPO_ROOT" '
+        /^worktree/ { path = $2 }
+        /^branch/ {
+            branch = $2
+            gsub("refs/heads/", "", branch)
+            if (path !~ /\/worktrees\//) {
+                if (path != repo_root) {
+                    print path " [" branch "]"
+                }
+            }
+        }
+    ')
+
+    if [[ -n "$OLD_WORKTREES" ]]; then
+        echo -e "${YELLOW}⚠️  Found old worktrees outside worktrees/ directory:${NC}"
+        echo "$OLD_WORKTREES"
+        echo ""
+        HAS_ISSUES=true
+
+        # Offer to migrate old worktrees
+        echo -e "${YELLOW}Would you like to migrate these to the new structure?${NC}"
+        echo ""
+        echo -e "${YELLOW}Options:${NC}"
+        echo "  1. Migrate to new structure (RECOMMENDED - preserves everything)"
+        echo "  2. Remove old worktrees (loses uncommitted changes)"
+        echo "  3. Skip (leave as-is)"
+        echo ""
+        read -p "Choose option (1/2/3): " -n 1 -r
+        echo ""
+        echo ""
+
+        case $REPLY in
+            1)
+                echo -e "${BLUE}Migrating old worktrees to new structure...${NC}"
+                echo ""
+
+                # Parse and migrate each old worktree
+                while IFS= read -r line; do
+                    OLD_PATH=$(echo "$line" | sed 's/ \[.*$//')
+                    OLD_BRANCH=$(echo "$line" | sed 's/.*\[//;s/\]$//')
+
+                    if [[ -n "$OLD_PATH" && -d "$OLD_PATH" ]]; then
+                        NEW_PATH="$REPO_ROOT/worktrees/$OLD_BRANCH"
+
+                        echo -e "${BLUE}Migrating: $OLD_BRANCH${NC}"
+                        echo -e "  From: $OLD_PATH"
+                        echo -e "  To:   $NEW_PATH"
+
+                        # Check for uncommitted changes and stash if needed
+                        cd "$OLD_PATH"
+                        STASHED=false
+                        if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+                            echo -e "${YELLOW}  ⚠️  Uncommitted changes found - stashing...${NC}"
+                            STASH_MSG="Pre-migration backup from $OLD_PATH ($(date +%Y%m%d-%H%M%S))"
+                            git stash push -m "$STASH_MSG" 2>/dev/null
+                            STASHED=true
+                            echo -e "${GREEN}  ✓ Changes stashed${NC}"
+                        fi
+
+                        cd "$REPO_ROOT"
+
+                        # Move the directory
+                        mkdir -p "$REPO_ROOT/worktrees"
+                        mv "$OLD_PATH" "$NEW_PATH"
+
+                        # Update git worktree metadata
+                        git worktree prune 2>/dev/null
+
+                        # Fix the .git file in the worktree
+                        if [[ -f "$NEW_PATH/.git" ]]; then
+                            echo "gitdir: $REPO_ROOT/.git/worktrees/$OLD_BRANCH" > "$NEW_PATH/.git"
+                        fi
+
+                        # Fix the gitdir file in .git/worktrees/
+                        if [[ -d "$REPO_ROOT/.git/worktrees/$OLD_BRANCH" ]]; then
+                            echo "$NEW_PATH" > "$REPO_ROOT/.git/worktrees/$OLD_BRANCH/gitdir"
+                        fi
+
+                        # Restore stashed changes if any
+                        if [[ "$STASHED" == true ]]; then
+                            cd "$NEW_PATH"
+                            if git stash list 2>/dev/null | grep -q "$STASH_MSG"; then
+                                git stash pop 2>/dev/null
+                                echo -e "${GREEN}  ✓ Changes restored${NC}"
+                            fi
+                        fi
+
+                        echo -e "${GREEN}  ✓ Migration complete${NC}"
+                        echo ""
+                    fi
+                done <<< "$OLD_WORKTREES"
+
+                echo -e "${GREEN}✓ All old worktrees migrated!${NC}"
+                echo ""
+
+                # Re-run validation to show clean state
+                echo -e "${BLUE}Updated worktree list:${NC}"
+                git worktree list
+                echo ""
+
+                # Re-check for remaining old worktrees after migration
+                REMAINING_OLD=$(git worktree list --porcelain | awk -v repo_root="$REPO_ROOT" '
+                    /^worktree/ { path = $2 }
+                    /^branch/ {
+                        branch = $2
+                        gsub("refs/heads/", "", branch)
+                        if (path !~ /\/worktrees\//) {
+                            if (path != repo_root) {
+                                print path
+                            }
+                        }
+                    }
+                ')
+                if [[ -z "$REMAINING_OLD" ]]; then
+                    # Clear the issue flag if no old worktrees remain
+                    HAS_ISSUES=""
+                fi
+                ;;
+            2)
+                echo -e "${BLUE}Removing old worktrees...${NC}"
+                echo ""
+
+                while IFS= read -r line; do
+                    OLD_PATH=$(echo "$line" | sed 's/ \[.*$//')
+                    OLD_BRANCH=$(echo "$line" | sed 's/.*\[//;s/\]$//')
+
+                    if [[ -n "$OLD_PATH" && -d "$OLD_PATH" ]]; then
+                        echo -e "${YELLOW}Removing: $OLD_PATH${NC}"
+
+                        if git worktree remove "$OLD_PATH" --force 2>/dev/null; then
+                            echo -e "${GREEN}  ✓ Worktree removed${NC}"
+                        else
+                            rm -rf "$OLD_PATH"
+                            git worktree prune
+                            echo -e "${GREEN}  ✓ Manually removed and pruned${NC}"
+                        fi
+                    fi
+                done <<< "$OLD_WORKTREES"
+
+                echo ""
+                echo -e "${GREEN}✓ All old worktrees removed${NC}"
+                echo ""
+
+                # Re-check for remaining old worktrees after removal
+                REMAINING_OLD=$(git worktree list --porcelain | awk -v repo_root="$REPO_ROOT" '
+                    /^worktree/ { path = $2 }
+                    /^branch/ {
+                        branch = $2
+                        gsub("refs/heads/", "", branch)
+                        if (path !~ /\/worktrees\//) {
+                            if (path != repo_root) {
+                                print path
+                            }
+                        }
+                    }
+                ')
+                if [[ -z "$REMAINING_OLD" ]]; then
+                    # Clear the issue flag if no old worktrees remain
+                    HAS_ISSUES=""
+                fi
+                ;;
+            3|*)
+                echo -e "${YELLOW}Skipped - old worktrees left as-is${NC}"
+                echo ""
+                ;;
+        esac
+    else
+        echo -e "${GREEN}✓ No old worktrees found${NC}"
+    fi
+    echo ""
+
+    # Check for broken worktree metadata (e.g., manually moved directories)
+    echo -e "${BLUE}[2.5/4] Checking worktree metadata integrity...${NC}"
+
+    # Try to detect broken worktrees by checking if git worktree list has errors
+    BROKEN_WORKTREES=$(git worktree list 2>&1 | grep -i "error\|warning" || true)
+
+    # Also check if worktree directories exist where git thinks they should be
+    NEEDS_REPAIR=false
+    while IFS= read -r line; do
+        if [[ $line == *"/"* ]]; then
+            WORKTREE_PATH=$(echo "$line" | awk '{print $1}')
+            if [[ ! -d "$WORKTREE_PATH" ]]; then
+                NEEDS_REPAIR=true
+                echo -e "${YELLOW}⚠️  Worktree path in git metadata doesn't exist: $WORKTREE_PATH${NC}"
+            fi
+        fi
+    done < <(git worktree list 2>/dev/null || true)
+
+    # Check for worktree directories that exist but aren't in git's metadata
+    if [[ -d "$REPO_ROOT/worktrees" ]]; then
+        for dir in "$REPO_ROOT/worktrees"/*; do
+            if [[ -d "$dir" && -f "$dir/.git" ]]; then
+                DIR_PATH="$dir"
+                # Check if this directory is in git worktree list
+                if ! git worktree list 2>/dev/null | grep -q "^$DIR_PATH "; then
+                    NEEDS_REPAIR=true
+                    echo -e "${YELLOW}⚠️  Worktree directory exists but not in git metadata: $DIR_PATH${NC}"
+                fi
+            fi
+        done
+    fi
+
+    if [[ "$NEEDS_REPAIR" == true ]] || [[ -n "$BROKEN_WORKTREES" ]]; then
+        echo -e "${YELLOW}Detected metadata inconsistencies - running git worktree repair...${NC}"
+
+        cd "$REPO_ROOT"
+        if git worktree repair 2>/dev/null; then
+            echo -e "${GREEN}✓ Worktree metadata repaired${NC}"
+            echo ""
+            echo -e "${BLUE}Updated worktree list:${NC}"
+            git worktree list
+        else
+            echo -e "${RED}✗ Failed to repair worktree metadata${NC}"
+            echo -e "${YELLOW}You may need to manually fix worktrees with:${NC}"
+            echo "  git worktree remove <path>"
+            echo "  git worktree add <path> <branch>"
+            HAS_ISSUES=true
+        fi
+    else
+        echo -e "${GREEN}✓ Worktree metadata is intact${NC}"
+    fi
+    echo ""
+
+    # Check for worktree/branch name mismatches
+    echo -e "${BLUE}[3/4] Validating worktree/branch alignment...${NC}"
+    MISMATCHES=""
+
+    while IFS= read -r line; do
+        if [[ $line == "$REPO_ROOT/worktrees/"* ]]; then
+            # Extract worktree path and branch from git worktree list output
+            WORKTREE_PATH=$(echo "$line" | awk '{print $1}')
+
+            # Extract branch name from [branch] format, skip if no brackets found
+            if [[ $line == *"["*"]"* ]]; then
+                BRANCH=$(echo "$line" | sed 's/.*\[\([^]]*\)\].*/\1/')
+            else
+                BRANCH=""
+            fi
+
+            # Get the worktree directory name
+            WORKTREE_NAME=$(basename "$WORKTREE_PATH")
+
+            # Check if worktree name matches branch name
+            if [[ -n "$BRANCH" && "$WORKTREE_NAME" != "$BRANCH" ]]; then
+                MISMATCHES="${MISMATCHES}  Mismatch: $WORKTREE_PATH has branch [$BRANCH]\n"
+                HAS_ISSUES=true
+            fi
+        fi
+    done < <(git worktree list)
+
+    if [[ -n "$MISMATCHES" ]]; then
+        echo -e "${YELLOW}⚠️  Found worktree/branch name mismatches:${NC}"
+        echo -e "$MISMATCHES"
+        echo -e "${YELLOW}Recommendation: Worktree folder names should match branch names${NC}"
+    else
+        echo -e "${GREEN}✓ All worktree names match their branches${NC}"
+    fi
+    echo ""
+
+    # Check for invalid/orphaned directories in worktrees/ folder
+    echo -e "${BLUE}[3.5/4] Checking for invalid directories in worktrees/...${NC}"
+    INVALID_DIRS=""
+    REPAIRABLE_DIRS=""
+
+    if [[ -d "$REPO_ROOT/worktrees" ]]; then
+        # Get list of all directories in worktrees/
+        for dir in "$REPO_ROOT/worktrees"/*; do
+            if [[ -d "$dir" ]]; then
+                DIR_NAME=$(basename "$dir")
+
+                # Check if this directory is registered as a git worktree
+                if ! git worktree list 2>/dev/null | grep -q "^$dir "; then
+                    # Not in worktree list - check if it has a .git file
+                    if [[ -f "$dir/.git" ]]; then
+                        # Has .git file - check if it's a valid worktree that can be repaired
+                        GITDIR=$(cat "$dir/.git" 2>/dev/null | sed 's/gitdir: //')
+
+                        # Check if the branch exists in the repo
+                        if git show-ref --verify --quiet "refs/heads/$DIR_NAME" 2>/dev/null; then
+                            # Branch exists - this is repairable
+                            REPAIRABLE_DIRS="${REPAIRABLE_DIRS}  ${BLUE}• $DIR_NAME/ (valid branch - can be restored)${NC}\n"
+                        else
+                            # Branch doesn't exist - truly orphaned
+                            INVALID_DIRS="${INVALID_DIRS}  ${YELLOW}• $DIR_NAME/ (orphaned - branch doesn't exist)${NC}\n"
+                            HAS_ISSUES=true
+                        fi
+                    else
+                        # No .git file - likely created by build process or mistake
+                        INVALID_DIRS="${INVALID_DIRS}  ${YELLOW}• $DIR_NAME/ (not a worktree - no .git file)${NC}\n"
+                        HAS_ISSUES=true
+                    fi
+                fi
+            fi
+        done
+    fi
+
+    if [[ -n "$REPAIRABLE_DIRS" ]]; then
+        echo -e "${BLUE}Found repairable worktree directories:${NC}"
+        echo -e "$REPAIRABLE_DIRS"
+        echo -e "${BLUE}These can be restored with: git worktree add --force worktrees/<branch-name> <branch-name>${NC}"
+        echo ""
+    fi
+
+    if [[ -n "$INVALID_DIRS" ]]; then
+        echo -e "${YELLOW}⚠️  Found invalid directories in worktrees/:${NC}"
+        echo -e "$INVALID_DIRS"
+        echo -e "${YELLOW}Recommendation: These directories should be removed or moved${NC}"
+        echo -e "${BLUE}Possible causes:${NC}"
+        echo "  • Build processes creating folders above repo root"
+        echo "  • Old worktree remnants after manual branch deletion"
+        echo "  • Mistakenly created directories"
+        echo ""
+        echo -e "${BLUE}To fix:${NC}"
+        echo "  • For non-worktree dirs: mv or rm the directory"
+        echo "  • Check build configs to prevent creating folders above repo root"
+    fi
+
+    if [[ -z "$INVALID_DIRS" ]] && [[ -z "$REPAIRABLE_DIRS" ]]; then
+        echo -e "${GREEN}✓ All directories in worktrees/ are valid worktrees${NC}"
+    fi
+    echo ""
+
+    # Check base repo status
+    echo -e "${BLUE}[4/4] Checking base repository status...${NC}"
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null)
+
+    if [[ -z "$CURRENT_BRANCH" ]]; then
+        echo -e "${GREEN}✓ Base repo is in detached HEAD state${NC}"
+        echo -e "${YELLOW}Recommendation: Create 'worktree-parent' branch for clarity${NC}"
+        echo -e "${BLUE}To fix: git branch -f worktree-parent main && git checkout worktree-parent${NC}"
+    elif [[ "$CURRENT_BRANCH" == "worktree-parent" ]]; then
+        echo -e "${GREEN}✓ Base repo is on 'worktree-parent' branch (correct state)${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Base repo is on branch: $CURRENT_BRANCH${NC}"
+        echo -e "${YELLOW}Recommendation: Base repo should be on 'worktree-parent' branch${NC}"
+        echo -e "${BLUE}To fix: cd $REPO_ROOT && git branch -f worktree-parent main && git checkout worktree-parent${NC}"
+        HAS_ISSUES=true
+    fi
+
+    # Check if base repo is properly sparse (should have minimal files)
+    TRACKED_FILES=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$TRACKED_FILES" -gt 0 ]]; then
+        echo -e "${YELLOW}⚠️  Base repo has $TRACKED_FILES checked out files (should be 0)${NC}"
+        echo -e "${YELLOW}Recommendation: Convert to fully sparse checkout${NC}"
+        echo -e "${BLUE}To fix: git sparse-checkout set --no-cone \"\" && git read-tree -mu HEAD${NC}"
+        HAS_ISSUES=true
+    else
+        echo -e "${GREEN}✓ Base repo is sparse (no checked out files)${NC}"
+    fi
+
+    # Check for untracked directories in base repo (excluding dot folders for IDE/config)
+    # Exclude all dot folders (.git, .claude, .idea, .vscode, etc.) - these should stay in base repo
+    UNTRACKED_LARGE=$(find "$REPO_ROOT" -maxdepth 1 -type d ! -path "$REPO_ROOT" ! -name "." ! -name ".git" ! -name "worktrees" ! -name ".*" 2>/dev/null)
+    if [[ -n "$UNTRACKED_LARGE" ]]; then
+        echo -e "${YELLOW}⚠️  Base repo has untracked directories:${NC}"
+        UNTRACKED_DIRS_LIST=""
+        echo "$UNTRACKED_LARGE" | while read dir; do
+            DIR_SIZE=$(du -sh "$dir" 2>/dev/null | awk '{print $1}')
+            DIR_NAME=$(basename "$dir")
+            echo -e "  ${YELLOW}• $DIR_NAME/ ($DIR_SIZE)${NC}"
+        done
+        echo -e "${YELLOW}Recommendation: These directories should be in worktrees, not base repo${NC}"
+        echo -e "${BLUE}Note: This is often due to IDE being pointed at base repo during migration${NC}"
+        echo -e "${BLUE}To fix: Re-run this script and choose cleanup option${NC}"
+        HAS_ISSUES=true
+    fi
+    echo ""
+
+    # Summary
+    echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+    if [[ -z "$HAS_ISSUES" ]]; then
+        echo -e "${GREEN}✓ Worktree structure is healthy!${NC}"
+        echo ""
+        echo -e "${BLUE}Quick commands:${NC}"
+        echo "  git issue-worktree --issue 123    # Create new worktree"
+        echo "  git smart-switch main             # Navigate to worktree"
+        echo "  git worktree-cleanup              # Clean up merged worktrees"
+    else
+        echo -e "${YELLOW}⚠️  Issues found${NC}"
+        echo ""
+
+        # Offer to fix invalid directories in worktrees/
+        if [[ -n "$INVALID_DIRS" ]]; then
+            echo -e "${YELLOW}Would you like to clean up invalid worktrees/ directories?${NC}"
+            echo ""
+            echo -e "${YELLOW}This will:${NC}"
+            echo -e "$INVALID_DIRS"
+            echo ""
+            read -p "Remove these invalid directories? (y/N) " -n 1 -r
+            echo ""
+            echo ""
+
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${BLUE}Cleaning up invalid worktrees/ directories...${NC}"
+                echo ""
+
+                for dir in "$REPO_ROOT/worktrees"/*; do
+                    if [[ -d "$dir" ]]; then
+                        DIR_NAME=$(basename "$dir")
+
+                        # Check if this directory is NOT registered as a git worktree
+                        if ! git worktree list 2>/dev/null | grep -q "^$dir "; then
+                            # Check if it has .git file and branch exists (repairable)
+                            if [[ -f "$dir/.git" ]] && git show-ref --verify --quiet "refs/heads/$DIR_NAME" 2>/dev/null; then
+                                # Skip repairable worktrees - don't delete them
+                                echo -e "  ${BLUE}Skipping $DIR_NAME/ (can be restored)${NC}"
+                                continue
+                            fi
+
+                            echo -e "  ${YELLOW}Removing $DIR_NAME/...${NC}"
+
+                            # Check if it has .git file (orphaned worktree with deleted branch)
+                            if [[ -f "$dir/.git" ]]; then
+                                # Try git worktree remove first
+                                if git worktree remove --force "$dir" 2>/dev/null; then
+                                    echo -e "  ${GREEN}✓ Removed via git worktree${NC}"
+                                else
+                                    # Fallback to manual removal
+                                    rm -rf "$dir"
+                                    echo -e "  ${GREEN}✓ Removed manually${NC}"
+                                fi
+                            else
+                                # Not a worktree, just remove the directory
+                                rm -rf "$dir"
+                                echo -e "  ${GREEN}✓ Removed${NC}"
+                            fi
+                        fi
+                    fi
+                done
+
+                git worktree prune 2>/dev/null
+                echo ""
+                echo -e "${GREEN}✓ Invalid directories cleanup complete!${NC}"
+                echo ""
+            fi
+        fi
+
+        # Offer to fix base repo cleanliness issues
+        if [[ "$TRACKED_FILES" -gt 0 ]] || [[ -n "$UNTRACKED_LARGE" ]]; then
+            echo -e "${YELLOW}Would you like to clean up the base repository now?${NC}"
+            echo ""
+            echo -e "${YELLOW}This will:${NC}"
+            if [[ "$TRACKED_FILES" -gt 0 ]]; then
+                echo "  • Remove all $TRACKED_FILES checked out files (convert to sparse)"
+            fi
+            if [[ -n "$UNTRACKED_LARGE" ]]; then
+                echo "  • Delete build artifacts: $(echo "$UNTRACKED_LARGE" | xargs -n1 basename | tr '\n' ' ')"
+            fi
+            echo ""
+            read -p "Clean up base repo? (y/N) " -n 1 -r
+            echo ""
+            echo ""
+
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${BLUE}Cleaning up base repository...${NC}"
+                echo ""
+
+                # Convert to sparse checkout
+                if [[ "$TRACKED_FILES" -gt 0 ]]; then
+                    echo -e "${BLUE}Converting to sparse checkout...${NC}"
+                    git sparse-checkout set --no-cone "" 2>/dev/null
+                    git read-tree -mu HEAD 2>/dev/null
+                    REMAINING=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
+                    if [[ "$REMAINING" -eq 0 ]]; then
+                        echo -e "${GREEN}✓ Removed all checked out files${NC}"
+                    else
+                        echo -e "${YELLOW}⚠️  $REMAINING files remain${NC}"
+                    fi
+                fi
+
+                # Handle untracked directories - offer to move or delete
+                if [[ -n "$UNTRACKED_LARGE" ]]; then
+                    echo -e "${BLUE}What should we do with untracked directories?${NC}"
+                    echo ""
+                    echo -e "${YELLOW}Options:${NC}"
+                    echo "  1. Move to main branch worktree (recommended if unsure)"
+                    echo "  2. Delete (if these are just build artifacts)"
+                    echo "  3. Skip (leave as-is)"
+                    echo ""
+                    read -p "Choose option (1/2/3): " -n 1 -r
+                    echo ""
+                    echo ""
+
+                    case $REPLY in
+                        1)
+                            echo -e "${BLUE}Moving untracked directories to main worktree...${NC}"
+                            MAIN_WORKTREE="$REPO_ROOT/worktrees/$MAIN_BRANCH"
+
+                        if [[ ! -d "$MAIN_WORKTREE" ]]; then
+                            echo -e "${YELLOW}Main worktree doesn't exist, creating it...${NC}"
+                            git worktree add "$MAIN_WORKTREE" "$MAIN_BRANCH" 2>/dev/null
+                            # Disable sparse checkout in the new worktree (only parent should be sparse)
+                            if [[ -d "$MAIN_WORKTREE" ]]; then
+                                cd "$MAIN_WORKTREE"
+                                git config core.sparseCheckout false
+                                git sparse-checkout disable 2>/dev/null || true
+                                git read-tree -mu HEAD 2>/dev/null || true
+                                cd "$REPO_ROOT"
+                            fi
+                        fi
+
+                            echo "$UNTRACKED_LARGE" | while read dir; do
+                                if [[ -d "$dir" ]]; then
+                                    DIR_NAME=$(basename "$dir")
+                                    echo -e "  ${YELLOW}Moving $DIR_NAME/ to main worktree...${NC}"
+
+                                    # Check if destination already exists
+                                    if [[ -d "$MAIN_WORKTREE/$DIR_NAME" ]]; then
+                                        echo -e "  ${YELLOW}⚠️  $DIR_NAME/ already exists in main worktree, merging...${NC}"
+                                        cp -R "$dir"/* "$MAIN_WORKTREE/$DIR_NAME/" 2>/dev/null
+                                        rm -rf "$dir"
+                                    else
+                                        mv "$dir" "$MAIN_WORKTREE/" 2>/dev/null
+                                    fi
+
+                                    echo -e "  ${GREEN}✓ Moved${NC}"
+                                fi
+                            done
+                            echo ""
+                            echo -e "${GREEN}✓ Untracked directories moved to: $MAIN_WORKTREE${NC}"
+                            ;;
+                        2)
+                            echo -e "${BLUE}Deleting untracked directories...${NC}"
+                            echo "$UNTRACKED_LARGE" | while read dir; do
+                                if [[ -d "$dir" ]]; then
+                                    echo -e "  ${YELLOW}Removing $(basename "$dir")...${NC}"
+                                    rm -rf "$dir"
+                                    echo -e "  ${GREEN}✓ Removed${NC}"
+                                fi
+                            done
+                            ;;
+                        3|*)
+                            echo -e "${YELLOW}Skipped - untracked directories left as-is${NC}"
+                            ;;
+                    esac
+                    echo ""
+                fi
+
+                echo ""
+                echo -e "${GREEN}✓ Base repository cleanup complete!${NC}"
+                echo ""
+                echo -e "${BLUE}Base repo status:${NC}"
+                du -sh . 2>/dev/null | awk '{print "  Total size: " $1}'
+                echo ""
+            fi
+        fi
+
+        # After cleanup, check if we need to create worktree-parent branch
+        CURRENT_BRANCH=$(git branch --show-current 2>/dev/null)
+        if [[ -z "$CURRENT_BRANCH" ]] || [[ "$CURRENT_BRANCH" != "worktree-parent" ]]; then
+            echo ""
+            echo -e "${YELLOW}Base repo is not on 'worktree-parent' branch${NC}"
+            read -p "Create and switch to 'worktree-parent' branch for clarity? (Y/n) " -n 1 -r
+            echo ""
+            echo ""
+
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                echo -e "${BLUE}Creating worktree-parent branch...${NC}"
+                git branch -f worktree-parent "$MAIN_BRANCH" 2>/dev/null
+                git checkout worktree-parent >/dev/null 2>&1
+                echo -e "${GREEN}✓ Base repo now on 'worktree-parent' branch${NC}"
+                echo -e "${YELLOW}Note: This local branch exists only to avoid detached HEAD confusion${NC}"
+                echo ""
+            fi
+        fi
+
+        # Other recommendations
+        if [[ -n "$(git worktree list --porcelain | awk -v repo_root="$REPO_ROOT" '
+            /^worktree/ { path = $2 }
+            /^branch/ {
+                branch = $2
+                gsub("refs/heads/", "", branch)
+                if (path !~ /\/worktrees\//) {
+                    if (path != repo_root) {
+                        print path
+                    }
+                }
+            }
+        ')" ]]; then
+            echo -e "${BLUE}Still have old worktrees?${NC}"
+            echo "  • Re-run this script to migrate them interactively"
+            echo ""
+        fi
+    fi
+    echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    exit 0
+fi
+
+# Check for old worktrees that may need cleanup (BEFORE migration starts)
+echo -e "${BLUE}Checking for old worktrees...${NC}"
+OLD_WORKTREES=$(git worktree list --porcelain | awk -v repo_root="$REPO_ROOT" '
+    /^worktree/ { path = $2 }
+    /^branch/ {
+        branch = $2
+        gsub("refs/heads/", "", branch)
+    }
+    /^$/ {
+        if (path != "" && path !~ /\/worktrees\// && path != repo_root) {
+            print path " [" branch "]"
+        }
+        path = ""
+        branch = ""
+    }
+')
+
+if [[ -n "$OLD_WORKTREES" ]]; then
+    echo -e "${YELLOW}⚠️  Old worktree pattern detected!${NC}"
+    echo ""
+    echo -e "${YELLOW}Existing worktrees outside worktrees/ directory:${NC}"
+    echo "$OLD_WORKTREES"
+    echo ""
+    echo -e "${RED}⚠️  CRITICAL: These old worktrees MUST be removed before migration!${NC}"
+    echo ""
+    echo -e "${BLUE}Why?${NC}"
+    echo "  • Each branch can only be checked out in ONE place"
+    echo "  • Old worktrees block creation of new worktrees for same branches"
+    echo "  • This would cause migration to fail"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  1. Auto-remove old worktrees (RECOMMENDED - changes will be preserved)"
+    echo "  2. Manual cleanup (you handle it yourself)"
+    echo "  3. Cancel migration"
+    echo ""
+    read -p "Choose option (1/2/3): " -n 1 -r
+    echo ""
+    echo
+
+    case $REPLY in
+        1)
+            echo -e "${BLUE}Auto-removing old worktrees...${NC}"
+            echo ""
+
+            # Parse and remove each old worktree
+            while IFS= read -r line; do
+                # Extract path from line (before the [branch] part)
+                OLD_PATH=$(echo "$line" | sed 's/ \[.*$//')
+                OLD_BRANCH=$(echo "$line" | sed 's/.*\[//;s/\]$//')
+
+                if [[ -n "$OLD_PATH" && -d "$OLD_PATH" ]]; then
+                    echo -e "${YELLOW}Removing: $OLD_PATH${NC}"
+
+                    # Check for uncommitted changes in old worktree
+                    cd "$OLD_PATH"
+                    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+                        echo -e "${YELLOW}  ⚠️  Uncommitted changes found - stashing...${NC}"
+                        STASH_MSG="Pre-migration backup from $OLD_PATH ($(date +%Y%m%d-%H%M%S))"
+                        git stash push -m "$STASH_MSG" 2>/dev/null
+                        echo -e "${GREEN}  ✓ Changes stashed: $STASH_MSG${NC}"
+                        echo -e "${BLUE}  → Restore later in new worktree with: git stash list${NC}"
+                    fi
+
+                    cd "$REPO_ROOT"
+
+                    # Remove the worktree via git (safer than rm -rf)
+                    if git worktree remove "$OLD_PATH" --force 2>/dev/null; then
+                        echo -e "${GREEN}  ✓ Worktree removed via git${NC}"
+                    else
+                        # Fallback: manual removal if git command fails
+                        echo -e "${YELLOW}  Attempting manual removal...${NC}"
+                        rm -rf "$OLD_PATH"
+                        git worktree prune
+                        echo -e "${GREEN}  ✓ Manually removed and pruned${NC}"
+                    fi
+                fi
+            done <<< "$OLD_WORKTREES"
+
+            echo ""
+            echo -e "${GREEN}✓ All old worktrees removed${NC}"
+            echo -e "${BLUE}You can restore any stashed changes after migration${NC}"
+            echo ""
+            ;;
+        2)
+            echo -e "${YELLOW}Manual cleanup selected${NC}"
+            echo ""
+            echo -e "${BLUE}Steps to clean up manually:${NC}"
+            echo "  1. For each old worktree, stash uncommitted changes"
+            echo "  2. Remove worktree: git worktree remove <path> --force"
+            echo "  3. Or manually: rm -rf <path> && git worktree prune"
+            echo "  4. Re-run this migration script"
+            echo ""
+            exit 0
+            ;;
+        3|*)
+            echo -e "${YELLOW}Migration cancelled${NC}"
+            exit 0
+            ;;
+    esac
+fi
+
+# Get current branch
+CURRENT_BRANCH=$(git branch --show-current)
+if [ -z "$CURRENT_BRANCH" ]; then
+    echo -e "${RED}Error: Not on a branch (detached HEAD)${NC}"
+    echo "Please checkout a branch first: git checkout main"
+    exit 1
+fi
+
+echo -e "${BLUE}Current branch:${NC} ${GREEN}$CURRENT_BRANCH${NC}"
+
+# Check for uncommitted changes
+if ! git diff-index --quiet HEAD --; then
+    echo -e "${YELLOW}Warning: You have uncommitted changes${NC}"
+    git status --short
+    echo ""
+    if [[ "$DRY_RUN" == false ]]; then
+        read -p "These changes will be preserved. Continue? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}Migration cancelled${NC}"
+            exit 0
+        fi
+    fi
+fi
+
+# Determine main branch
+MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+if [ -z "$MAIN_BRANCH" ]; then
+    # Fallback: try common branch names
+    if git show-ref --verify --quiet refs/heads/main; then
+        MAIN_BRANCH="main"
+    elif git show-ref --verify --quiet refs/heads/master; then
+        MAIN_BRANCH="master"
+    else
+        echo -e "${RED}Error: Cannot determine main branch${NC}"
+        exit 1
+    fi
+fi
+
+echo -e "${BLUE}Main branch:${NC} ${GREEN}$MAIN_BRANCH${NC}"
+echo ""
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${YELLOW}=== DRY RUN MODE ===${NC}"
+    echo ""
+    echo -e "${YELLOW}Would perform these operations:${NC}"
+    echo ""
+    echo -e "${BLUE}1. Create worktrees directory:${NC}"
+    echo "   mkdir -p \"$REPO_ROOT/worktrees\""
+    echo ""
+    echo -e "${BLUE}2. Create worktree for current branch ($CURRENT_BRANCH):${NC}"
+    echo "   git worktree add \"$REPO_ROOT/worktrees/$CURRENT_BRANCH\" \"$CURRENT_BRANCH\""
+    echo ""
+    echo -e "${BLUE}3. List existing branches to potentially convert:${NC}"
+    git branch --format='   %(refname:short)'
+    echo ""
+    echo -e "${BLUE}4. Suggested next steps:${NC}"
+    echo "   - Create worktree for $MAIN_BRANCH if not current branch"
+    echo "   - Create worktrees for other active branches"
+    echo "   - Use git-issue-worktree for future branches"
+    echo ""
+    echo -e "${GREEN}Run without --dry-run to execute migration${NC}"
+    exit 0
+fi
+
+# Important pre-migration warnings
+echo -e "${RED}═══════════════════════════════════════════════════════${NC}"
+echo -e "${RED}   ⚠️  IMPORTANT: CLOSE ALL IDEs BEFORE PROCEEDING${NC}"
+echo -e "${RED}═══════════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "${YELLOW}Before migrating, please:${NC}"
+echo "  1. ${RED}Close all IDEs${NC} (IntelliJ, VS Code, Eclipse, etc.)"
+echo "  2. Save any open work"
+echo "  3. Wait for any running builds to complete"
+echo ""
+echo -e "${YELLOW}Why?${NC}"
+echo "  • IDEs pointed at base repo will create files during migration"
+echo "  • This can leave artifacts in the wrong location"
+echo "  • May cause conflicts or data loss"
+echo ""
+echo -e "${BLUE}After migration:${NC}"
+echo "  • ${RED}DO NOT${NC} reopen IDEs at: ${RED}$REPO_ROOT${NC}"
+echo "  • ${GREEN}INSTEAD${NC} open at: ${GREEN}$REPO_ROOT/worktrees/$CURRENT_BRANCH/${NC}"
+echo "  • A WORKTREE-README.md will be created with detailed instructions"
+echo ""
+echo -e "${RED}═══════════════════════════════════════════════════════${NC}"
+echo ""
+
+# Confirm IDEs are closed
+read -p "Have you closed all IDEs? (y/N) " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Please close all IDEs and run this command again${NC}"
+    exit 0
+fi
+echo ""
+
+# Confirm migration
+echo -e "${YELLOW}This will convert your repository to use worktrees:${NC}"
+echo "  1. Convert main repo to sparse checkout (git metadata only)"
+echo "  2. Create worktree for $MAIN_BRANCH branch"
+if [ "$CURRENT_BRANCH" != "$MAIN_BRANCH" ]; then
+    echo "  3. Create worktree for $CURRENT_BRANCH branch"
+    echo "  4. Preserve all uncommitted changes in $CURRENT_BRANCH worktree"
+else
+    echo "  3. Preserve all uncommitted changes in $MAIN_BRANCH worktree"
+fi
+echo ""
+read -p "Proceed with migration? (y/N) " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Migration cancelled${NC}"
+    exit 0
+fi
+
+echo ""
+echo -e "${BLUE}Starting migration...${NC}"
+echo ""
+
+# Step 1: Identify untracked files/directories to move
+echo -e "${BLUE}[1/6] Scanning for untracked files and directories...${NC}"
+
+# Get list of untracked files/directories (excluding .git, dot folders, and future worktrees/)
+# Exclude: .git (repo metadata), .claude/.idea/.vscode (IDE config), .DS_Store (macOS), worktrees/ (future location)
+UNTRACKED_ITEMS=$(git ls-files --others --exclude-standard 2>/dev/null | grep -v "^\.DS_Store$")
+UNTRACKED_DIRS=$(find . -maxdepth 1 -type d ! -name "." ! -name ".git" ! -name "worktrees" ! -name ".*" 2>/dev/null)
+
+if [[ -n "$UNTRACKED_ITEMS" ]] || [[ -n "$UNTRACKED_DIRS" ]]; then
+    echo -e "${YELLOW}Found untracked content to migrate:${NC}"
+    if [[ -n "$UNTRACKED_DIRS" ]]; then
+        echo "$UNTRACKED_DIRS" | while read dir; do
+            DIR_SIZE=$(du -sh "$dir" 2>/dev/null | awk '{print $1}')
+            echo "  • $(basename "$dir")/ ($DIR_SIZE)"
+        done
+    fi
+    UNTRACKED_COUNT=$(echo "$UNTRACKED_ITEMS" | wc -l | tr -d ' ')
+    if [[ "$UNTRACKED_COUNT" -gt 0 ]]; then
+        echo "  • $UNTRACKED_COUNT untracked files"
+    fi
+else
+    echo -e "${GREEN}✓ No untracked content to migrate${NC}"
+fi
+echo ""
+
+# Step 2: Create worktrees directory and exclude from git
+echo -e "${BLUE}[2/6] Creating worktrees directory...${NC}"
+mkdir -p "$REPO_ROOT/worktrees"
+
+# Add worktrees/ to .git/info/exclude (local ignore, no commits needed)
+EXCLUDE_FILE="$REPO_ROOT/.git/info/exclude"
+if [[ -f "$EXCLUDE_FILE" ]]; then
+    if ! grep -q "^worktrees/$" "$EXCLUDE_FILE" 2>/dev/null; then
+        echo "" >> "$EXCLUDE_FILE"
+        echo "# Worktree directories (git worktree)" >> "$EXCLUDE_FILE"
+        echo "worktrees/" >> "$EXCLUDE_FILE"
+        echo -e "${GREEN}✓ Added worktrees/ to .git/info/exclude${NC}"
+    else
+        echo -e "${GREEN}✓ worktrees/ already in .git/info/exclude${NC}"
+    fi
+else
+    # Should always exist, but create if missing
+    mkdir -p "$(dirname "$EXCLUDE_FILE")"
+    echo "# Worktree directories (git worktree)" > "$EXCLUDE_FILE"
+    echo "worktrees/" >> "$EXCLUDE_FILE"
+    echo -e "${GREEN}✓ Added worktrees/ to .git/info/exclude${NC}"
+fi
+
+echo -e "${GREEN}✓ Created worktrees/ directory${NC}"
+
+# Step 3: Handle uncommitted changes before creating worktrees
+HAS_CHANGES=false
+echo -e "${BLUE}[3/6] Checking for uncommitted changes...${NC}"
+if ! git diff-index --quiet HEAD --; then
+    HAS_CHANGES=true
+    # Stash changes temporarily
+    STASH_MESSAGE="git-migrate-to-worktrees temporary stash $(date +%s)"
+    git stash push -m "$STASH_MESSAGE" 2>/dev/null
+    echo -e "${GREEN}✓ Changes stashed temporarily${NC}"
+else
+    echo -e "${GREEN}✓ No uncommitted changes${NC}"
+fi
+
+# Step 3.5: Detach HEAD to prepare for worktree creation
+# This prevents "already checked out" errors when creating worktrees
+# We detach at the main branch's HEAD for a clean neutral state
+echo -e "${BLUE}Detaching HEAD to prepare for worktree creation...${NC}"
+git checkout --detach "$MAIN_BRANCH" >/dev/null 2>&1
+echo -e "${GREEN}✓ HEAD detached at $MAIN_BRANCH (neutral state)${NC}"
+echo ""
+
+# Step 4: Create main branch worktree (always)
+echo -e "${BLUE}[4/6] Creating worktree for $MAIN_BRANCH (default branch)...${NC}"
+if git worktree add "$REPO_ROOT/worktrees/$MAIN_BRANCH" "$MAIN_BRANCH" 2>/dev/null; then
+    echo -e "${GREEN}✓ Worktree created at worktrees/$MAIN_BRANCH${NC}"
+    # Disable sparse checkout in the new worktree (only parent should be sparse)
+    cd "$REPO_ROOT/worktrees/$MAIN_BRANCH"
+    git config core.sparseCheckout false
+    git sparse-checkout disable 2>/dev/null || true
+    git read-tree -mu HEAD 2>/dev/null || true
+    cd "$REPO_ROOT"
+else
+    echo -e "${RED}Error: Could not create worktree for $MAIN_BRANCH${NC}"
+    echo -e "${YELLOW}This may indicate an issue with the repository${NC}"
+    exit 1
+fi
+
+# Step 5: Create worktree for current branch if different from main
+DESTINATION_WORKTREE="$REPO_ROOT/worktrees/$CURRENT_BRANCH"
+
+if [ "$CURRENT_BRANCH" != "$MAIN_BRANCH" ]; then
+    echo -e "${BLUE}[5/6] Creating worktree for $CURRENT_BRANCH (current branch)...${NC}"
+    if git worktree add "$DESTINATION_WORKTREE" "$CURRENT_BRANCH" 2>/dev/null; then
+        echo -e "${GREEN}✓ Worktree created at worktrees/$CURRENT_BRANCH${NC}"
+        # Disable sparse checkout in the new worktree (only parent should be sparse)
+        cd "$DESTINATION_WORKTREE"
+        git config core.sparseCheckout false
+        git sparse-checkout disable 2>/dev/null || true
+        git read-tree -mu HEAD 2>/dev/null || true
+        cd "$REPO_ROOT"
+    else
+        echo -e "${RED}Error: Could not create worktree for $CURRENT_BRANCH${NC}"
+        echo -e "${YELLOW}Hint: Try manually with: git checkout --detach && git worktree add worktrees/$CURRENT_BRANCH $CURRENT_BRANCH${NC}"
+        exit 1
+    fi
+else
+    DESTINATION_WORKTREE="$REPO_ROOT/worktrees/$MAIN_BRANCH"
+fi
+echo ""
+
+# Step 5.5: Move untracked files/directories to current branch worktree
+if [[ -n "$UNTRACKED_ITEMS" ]] || [[ -n "$UNTRACKED_DIRS" ]]; then
+    echo -e "${BLUE}[5.5/6] Moving untracked content to $CURRENT_BRANCH worktree...${NC}"
+
+    # Move directories (like target/, installs/, node_modules/, etc.)
+    if [[ -n "$UNTRACKED_DIRS" ]]; then
+        echo "$UNTRACKED_DIRS" | while read dir; do
+            if [[ -d "$dir" && "$dir" != "./worktrees" ]]; then
+                DIR_NAME=$(basename "$dir")
+                echo -e "  ${YELLOW}Moving $DIR_NAME/ ...${NC}"
+                mv "$dir" "$DESTINATION_WORKTREE/" 2>/dev/null && echo -e "  ${GREEN}✓ Moved${NC}"
+            fi
+        done
+    fi
+
+    # Move untracked files
+    if [[ -n "$UNTRACKED_ITEMS" ]]; then
+        echo "$UNTRACKED_ITEMS" | while read file; do
+            if [[ -f "$file" ]]; then
+                DIR=$(dirname "$file")
+                if [[ "$DIR" != "." ]]; then
+                    mkdir -p "$DESTINATION_WORKTREE/$DIR"
+                fi
+                mv "$file" "$DESTINATION_WORKTREE/$file" 2>/dev/null
+            fi
+        done
+        echo -e "  ${GREEN}✓ Moved untracked files${NC}"
+    fi
+    echo ""
+fi
+
+# Step 6: Restore uncommitted changes to the appropriate worktree
+if [[ "$HAS_CHANGES" == true ]]; then
+    echo -e "${BLUE}[6/6] Restoring uncommitted changes to $CURRENT_BRANCH worktree...${NC}"
+    cd "$DESTINATION_WORKTREE"
+
+    # Apply the stash to the worktree
+    if git stash pop 2>/dev/null; then
+        echo -e "${GREEN}✓ Uncommitted changes restored${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not automatically restore changes${NC}"
+        echo -e "${YELLOW}Your changes are still in the stash: $STASH_MESSAGE${NC}"
+        echo -e "${YELLOW}You can manually apply them with: cd '$DESTINATION_WORKTREE' && git stash pop${NC}"
+    fi
+    echo ""
+fi
+
+# Convert main repo to sparse checkout (remove all working tree files)
+echo -e "${BLUE}Converting main repo to sparse checkout...${NC}"
+cd "$REPO_ROOT"
+
+# Create README in base repo to explain worktree structure
+cat > "$REPO_ROOT/WORKTREE-README.md" << 'EOF'
+# Git Worktree Repository
+
+This repository uses **git worktrees** for managing multiple branches.
+
+## ⚠️ IMPORTANT: Update Your IDE
+
+**DO NOT open this directory in your IDE!**
+
+This base directory contains only git metadata. All actual work happens in the `worktrees/` subdirectories.
+
+### Update Your IDE Path:
+
+**Before:** `/path/to/repo/`
+**After:** `/path/to/repo/worktrees/your-branch-name/`
+
+### Examples:
+- IntelliJ IDEA: Close project, then open `worktrees/main/`
+- VS Code: File → Open Folder → Select `worktrees/main/`
+- Eclipse: File → Open Projects from File System → Select `worktrees/main/`
+
+## Structure
+
+```
+repo/                     ← DO NOT open this in IDE (on 'worktree-parent' branch)
+├── .git/                 ← Git metadata only
+├── WORKTREE-README.md    ← This file
+└── worktrees/            ← Open these in your IDE
+    ├── main/             ← Full working copy of main branch
+    ├── feature-123/      ← Full working copy of feature-123 branch
+    └── bugfix-456/       ← Full working copy of bugfix-456 branch
+```
+
+**Note:** The base repository is on a local 'worktree-parent' branch. This is intentional to avoid confusion
+with detached HEAD states. Do not commit or push from this directory - all work should happen in worktrees/.
+
+## Working with Worktrees
+
+### Create new worktree:
+```bash
+git issue-worktree --issue 123
+# or
+git worktree add worktrees/branch-name branch-name
+```
+
+### Switch between worktrees:
+```bash
+cd worktrees/main/
+# or use helper:
+git smart-switch main
+```
+
+### List all worktrees:
+```bash
+git worktree list
+```
+
+### Remove worktree:
+```bash
+git worktree remove worktrees/branch-name
+```
+
+## Why Worktrees?
+
+- **Multiple branches simultaneously** - Work on multiple features/bugs without switching
+- **Faster branch switching** - No need to stash changes
+- **Cleaner workspace** - Each branch has its own directory
+- **Build artifacts isolated** - No conflicts between branches
+
+## More Info
+
+Run `git migrate-to-worktrees` to validate your worktree structure.
+EOF
+
+# Add README to git exclude so it doesn't get committed
+echo "WORKTREE-README.md" >> .git/info/exclude
+
+echo -e "${GREEN}✓ Created WORKTREE-README.md (explains IDE path changes)${NC}"
+
+# Initialize sparse-checkout in cone mode
+git sparse-checkout init --cone 2>/dev/null
+
+# Set to completely empty - no files checked out in base repo
+# This makes the base repo contain ONLY .git directory
+git sparse-checkout set --no-cone "" 2>/dev/null
+
+# Force refresh to remove all files
+git read-tree -mu HEAD 2>/dev/null
+
+# Verify - count remaining non-git files
+REMAINING_FILES=$(find . -maxdepth 1 -type f ! -name ".git*" ! -name "worktrees" 2>/dev/null | wc -l | tr -d ' ')
+REMAINING_DIRS=$(find . -maxdepth 1 -type d ! -name "." ! -name ".git" ! -name "worktrees" 2>/dev/null | wc -l | tr -d ' ')
+
+if [[ "$REMAINING_FILES" -gt 0 ]] || [[ "$REMAINING_DIRS" -gt 0 ]]; then
+    echo -e "${YELLOW}⚠️  Some files/directories remain in base repo (expected: .git and worktrees only)${NC}"
+    echo -e "${YELLOW}This is normal for files not tracked by git (like target/, node_modules/, etc.)${NC}"
+    echo -e "${YELLOW}You can safely delete them: rm -rf target/ installs/ node_modules/ etc.${NC}"
+else
+    echo -e "${GREEN}✓ Base repo is now completely sparse (only .git and worktrees/)${NC}"
+fi
+
+echo -e "${GREEN}✓ Main repo converted to sparse checkout${NC}"
+
+# Create a clear local branch to replace confusing detached HEAD state
+echo -e "${BLUE}Creating worktree-parent branch for base repo...${NC}"
+# Create local branch at main branch's HEAD (doesn't track remote)
+git branch -f worktree-parent "$MAIN_BRANCH" 2>/dev/null
+git checkout worktree-parent >/dev/null 2>&1
+echo -e "${GREEN}✓ Base repo now on 'worktree-parent' branch (do not modify)${NC}"
+echo -e "${YELLOW}Note: This branch exists only in the base repo to avoid confusion${NC}"
+
+echo ""
+echo -e "${GREEN}✓ Migration complete!${NC}"
+echo ""
+
+# Show current worktrees
+echo -e "${BLUE}Current worktrees:${NC}"
+git worktree list
+
+echo ""
+echo -e "${YELLOW}Next steps:${NC}"
+echo "  1. Update your IDE to open worktrees/$CURRENT_BRANCH"
+echo "  2. Consider creating worktrees for other active branches:"
+echo ""
+
+# Show branches that don't have worktrees yet
+echo -e "${BLUE}Branches without worktrees:${NC}"
+git branch --format='%(refname:short)' | while read branch; do
+    if [ ! -d "$REPO_ROOT/worktrees/$branch" ]; then
+        echo "     git worktree add worktrees/$branch $branch"
+    fi
+done
+
+echo ""
+echo "  3. Use 'git issue-worktree' for future issue-based branches"
+echo "  4. Use 'git worktree-ide' to open IDEs for specific worktrees"
+echo ""
+echo -e "${GREEN}Your shell is now in: $DESTINATION_WORKTREE${NC}"
+echo ""
+
+# Change to the worktree directory
+# Note: This only works if the script is sourced, not executed
+# We'll output a message for the user to manually cd
+if [[ "$0" == "${BASH_SOURCE[0]}" ]] || [[ "$0" == "$SHELL" ]]; then
+    # Script was executed (not sourced), can't change directory
+    echo -e "${YELLOW}To complete the migration, please run:${NC}"
+    echo -e "${GREEN}  cd \"$DESTINATION_WORKTREE\"${NC}"
+    echo ""
+
+    # Output the path for easy copying or scripting
+    echo "$DESTINATION_WORKTREE"
+else
+    # Script was sourced, we can change directory
+    cd "$DESTINATION_WORKTREE"
+    echo -e "${GREEN}✓ Changed directory to $CURRENT_BRANCH worktree${NC}"
+fi
